@@ -21,6 +21,21 @@
         "scopeName": "source.one",
         "path": "./syntaxes/one.tmLanguage.json"
       }
-    ]
+    ],
+    "commands": [
+      {
+        "command": "one.runFile",
+        "title": "Run ONE File"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "one.runFile",
+          "when": "resourceLangId == one",
+          "group": "navigation"
+        }
+      ]
+    }
   }
 }
