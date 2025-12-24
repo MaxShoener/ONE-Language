@@ -1,0 +1,44 @@
+{
+  "name": "one",
+  "displayName": "ONE",
+  "description": "The ONE programming language (one for all)",
+  "version": "0.0.1",
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:one"
+  ],
+  "engines": {
+    "vscode": "^1.107.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [{
+      "id": "one",
+      "aliases": ["ONE", "one"],
+      "extensions": ["one"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "one",
+      "scopeName": "source.one",
+      "path": "./syntaxes/one.tmLanguage.json"
+    }],
+    "commands": [
+      {
+        "command": "one.runFile",
+        "title": "Run ONE File"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "one.runFile",
+          "when": "resourceLangId == one",
+          "group": "navigation"
+        }
+      ]
+    }
+  }
+}
