@@ -1,0 +1,26 @@
+{
+  "name": "one-language",
+  "displayName": "ONE Language",
+  "description": "Language support for ONE (.one)",
+  "version": "0.1.0",
+  "publisher": "your-name-here",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "one",
+        "aliases": ["ONE", "one"],
+        "extensions": [".one"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "one",
+        "scopeName": "source.one",
+        "path": "./syntaxes/one.tmLanguage.json"
+      }
+    ]
+  }
+}
