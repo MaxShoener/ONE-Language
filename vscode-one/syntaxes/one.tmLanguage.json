@@ -1,0 +1,56 @@
+{
+  "scopeName": "source.one",
+  "name": "ONE",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#numbers" },
+    { "include": "#tags" },
+    { "include": "#structure" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.one", "match": "//.*$" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        { "name": "string.quoted.double.one", "begin": "\"", "end": "\"", "patterns": [
+          { "name": "constant.character.escape.one", "match": "\\\\\"" }
+        ] }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.one", "match": "\\b(let|var|fn|function|type|if|when|else|otherwise|while|until|repeat|return|break|continue|guard|object)\\b" },
+        { "name": "keyword.operator.one", "match": "(\\+|\\-|\\*|/|==|!=|<=|>=|<|>|=|&&|\\|\\||!|\\?\\.|\\?\\?|=>|\\||\\?)" }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "name": "storage.type.one", "match": "\\b(number|string|bool|null)\\b" }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.one", "match": "\\b\\d+(\\.\\d+)?\\b" }
+      ]
+    },
+    "tags": {
+      "patterns": [
+        { "name": "meta.annotation.one", "match": "@(frontend|backend)\\b" },
+        { "name": "meta.annotation.one", "match": "@[A-Za-z_][A-Za-z0-9_]*\\b" }
+      ]
+    },
+    "structure": {
+      "patterns": [
+        { "name": "meta.tag.one", "match": "</?[A-Za-z_][A-Za-z0-9_]*(\\s+[^>]+)*/?>" },
+        { "name": "entity.other.attribute-name.one", "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b(?=\\s*:)" },
+        { "name": "constant.other.id.one", "match": "#[A-Za-z_][A-Za-z0-9_]*\\b" }
+      ]
+    }
+  }
+}
