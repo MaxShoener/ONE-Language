@@ -1,0 +1,14 @@
+type User {
+  name: string
+  age: number
+}
+
+let maybeUser: User? = null
+let either: number | string = 5
+either = "ok"
+
+maybeUser.maybe(u) {
+  print(u.name)
+}
+
+print(either)
