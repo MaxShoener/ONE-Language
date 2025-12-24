@@ -15,8 +15,7 @@ function activate(context) {
       const terminal = vscode.window.createTerminal("ONE");
       terminal.show();
 
-      // Adjust path to your compiler
-      terminal.sendText(`node path/to/one.js "${filePath}"`);
+      terminal.sendText(`node ONE-Language/compiler/one.js"${filePath}"`);
     }
   );
 
