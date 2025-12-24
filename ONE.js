@@ -1,37 +1,13 @@
 #!/usr/bin/env node
-/**
- * ======================================================
- * ONE v0.1 — Single-file reference implementation (Node.js)
- * ======================================================
- *
- * Implements:
- *  - Lexer (token table + longest-match rules)
- *  - Parser (recursive descent)
- *  - AST node constructors
- *  - Desugaring pass: until, guard, .loop, .when, .maybe
- *  - Strict optional type checker:
- *      * Types optional
- *      * If a type is written and incorrect => ERROR (always)
- *      * if/while/repeat conditions NOT required to be bool when type is Unknown
- *      * object literal syntax: object { key: value, ... }
- *  - Interpreter (lowered AST)
- *  - Frontend parsing mode:
- *      * < > structure allowed only in frontend mode
- *      * executable code must be inside <logic>{...}</logic>
- *      * <style> parsed but not executed (stored as data)
- *
- * Usage:
- *   node one.js program.one
- *
- * Notes:
- *  - ONE source files can be both backend and frontend with .one extension.
- *  - Mode directive (recommended):
- *      @frontend
- *      @backend
- *    If absent: defaults to BACKEND.
- */
-
 "use strict";
+
+/**
+ * ONE v0.1 (Upgraded)
+ * - Adds nullable types: T?
+ * - Adds union types: A | B
+ * - Enforces written types strictly (errors always if incorrect)
+ * - Conditions in if/while/etc are NOT required to be bool when type is Unknown
+ */
 
 const fs = require("fs");
 
@@ -79,7 +55,6 @@ function clonePos(p) {
 const TK = Object.freeze({
   EOF: "EOF",
 
-  // identifiers / literals
   IDENT: "IDENT",
   NUMBER: "NUMBER",
   STRING: "STRING",
@@ -102,13 +77,11 @@ const TK = Object.freeze({
   FALSE: "FALSE",
   NULL: "NULL",
 
-  OBJECT: "OBJECT", // object literal keyword: object { ... }
+  OBJECT: "OBJECT",
 
-  // mode directives (single token)
   MODE_FRONTEND: "MODE_FRONTEND",
   MODE_BACKEND: "MODE_BACKEND",
 
-  // tags
   AT: "AT",
 
   // operators
@@ -134,6 +107,10 @@ const TK = Object.freeze({
   NULL_COALESCE: "NULL_COALESCE",
   ARROW: "ARROW",
 
+  // NEW: type tokens
+  QUESTION: "QUESTION", // ?
+  BITOR: "BITOR",       // |
+
   // punctuation
   LPAREN: "LPAREN",
   RPAREN: "RPAREN",
@@ -144,7 +121,7 @@ const TK = Object.freeze({
   SEMICOLON: "SEMICOLON",
   DOT: "DOT",
 
-  // frontend structure tokens
+  // frontend structure
   LT: "LT",
   GT: "GT",
   LT_SLASH: "LT_SLASH",
@@ -216,12 +193,8 @@ class Lexer {
       return ch;
     }
     if (ch === "\r") {
-      // handle CRLF
-      if (this.peek(1) === "\n") {
-        this.pos.idx += 2;
-      } else {
-        this.pos.idx += 1;
-      }
+      if (this.peek(1) === "\n") this.pos.idx += 2;
+      else this.pos.idx += 1;
       this.pos.line += 1;
       this.pos.col = 1;
       return "\n";
@@ -232,11 +205,7 @@ class Lexer {
   }
 
   addToken(type, value, startPos, endPos) {
-    this.tokens.push({
-      type,
-      value,
-      span: makeSpan(startPos, endPos),
-    });
+    this.tokens.push({ type, value, span: makeSpan(startPos, endPos) });
   }
 
   lex() {
@@ -250,7 +219,7 @@ class Lexer {
         break;
       }
 
-      // Longest-match / multi-char operators first
+      // Longest-match first
       if (ch === "?" && this.peek(1) === ".") {
         this.advance(); this.advance();
         this.addToken(TK.OPTIONAL_DOT, "?.", start, clonePos(this.pos));
@@ -259,6 +228,16 @@ class Lexer {
       if (ch === "?" && this.peek(1) === "?") {
         this.advance(); this.advance();
         this.addToken(TK.NULL_COALESCE, "??", start, clonePos(this.pos));
+        continue;
+      }
+      if (ch === "|" && this.peek(1) === "|") {
+        this.advance(); this.advance();
+        this.addToken(TK.OR, "||", start, clonePos(this.pos));
+        continue;
+      }
+      if (ch === "&" && this.peek(1) === "&") {
+        this.advance(); this.advance();
+        this.addToken(TK.AND, "&&", start, clonePos(this.pos));
         continue;
       }
       if (ch === "=" && this.peek(1) === "=") {
@@ -281,16 +260,6 @@ class Lexer {
         this.addToken(TK.GREATER_EQUAL, ">=", start, clonePos(this.pos));
         continue;
       }
-      if (ch === "&" && this.peek(1) === "&") {
-        this.advance(); this.advance();
-        this.addToken(TK.AND, "&&", start, clonePos(this.pos));
-        continue;
-      }
-      if (ch === "|" && this.peek(1) === "|") {
-        this.advance(); this.advance();
-        this.addToken(TK.OR, "||", start, clonePos(this.pos));
-        continue;
-      }
       if (ch === "=" && this.peek(1) === ">") {
         this.advance(); this.advance();
         this.addToken(TK.ARROW, "=>", start, clonePos(this.pos));
@@ -309,22 +278,18 @@ class Lexer {
         continue;
       }
 
-      // Single-char tokens
+      // Single-char
       switch (ch) {
         case "@": {
           this.advance();
-          // mode directives as single token: @frontend / @backend
           const nameStart = clonePos(this.pos);
           if (isAlpha(this.peek(0))) {
             const ident = this.readIdentifier();
             const end = clonePos(this.pos);
             const lower = ident.toLowerCase();
-            if (lower === "frontend") {
-              this.addToken(TK.MODE_FRONTEND, "@frontend", start, end);
-            } else if (lower === "backend") {
-              this.addToken(TK.MODE_BACKEND, "@backend", start, end);
-            } else {
-              // emit AT then IDENT for normal tags
+            if (lower === "frontend") this.addToken(TK.MODE_FRONTEND, "@frontend", start, end);
+            else if (lower === "backend") this.addToken(TK.MODE_BACKEND, "@backend", start, end);
+            else {
               this.addToken(TK.AT, "@", start, nameStart);
               this.addToken(TK.IDENT, ident, nameStart, end);
             }
@@ -333,6 +298,10 @@ class Lexer {
           }
           continue;
         }
+
+        case "?": this.advance(); this.addToken(TK.QUESTION, "?", start, clonePos(this.pos)); continue;
+        case "|": this.advance(); this.addToken(TK.BITOR, "|", start, clonePos(this.pos)); continue;
+
         case "+": this.advance(); this.addToken(TK.PLUS, "+", start, clonePos(this.pos)); continue;
         case "-": this.advance(); this.addToken(TK.MINUS, "-", start, clonePos(this.pos)); continue;
         case "*": this.advance(); this.addToken(TK.STAR, "*", start, clonePos(this.pos)); continue;
@@ -351,6 +320,7 @@ class Lexer {
         case ";": this.advance(); this.addToken(TK.SEMICOLON, ";", start, clonePos(this.pos)); continue;
         case ".": this.advance(); this.addToken(TK.DOT, ".", start, clonePos(this.pos)); continue;
         case "#": this.advance(); this.addToken(TK.HASH, "#", start, clonePos(this.pos)); continue;
+
         case "\"": {
           const str = this.readString();
           this.addToken(TK.STRING, str.value, start, str.endPos);
@@ -360,24 +330,19 @@ class Lexer {
           break;
       }
 
-      // number
       if (isDigit(ch)) {
         const num = this.readNumber();
         this.addToken(TK.NUMBER, num.value, start, num.endPos);
         continue;
       }
 
-      // identifier / keyword
       if (isAlpha(ch)) {
         const ident = this.readIdentifier();
         const end = clonePos(this.pos);
         const lower = ident.toLowerCase();
         const kw = KEYWORD_CANON.get(lower);
-        if (kw) {
-          this.addToken(kw, ident, start, end);
-        } else {
-          this.addToken(TK.IDENT, ident, start, end);
-        }
+        if (kw) this.addToken(kw, ident, start, end);
+        else this.addToken(TK.IDENT, ident, start, end);
         continue;
       }
 
@@ -390,16 +355,12 @@ class Lexer {
   skipWhitespaceAndComments() {
     while (true) {
       const ch = this.peek(0);
-      // whitespace
       if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
         this.advance();
         continue;
       }
-      // comment: //
       if (ch === "/" && this.peek(1) === "/") {
-        while (this.peek(0) !== "\n" && this.peek(0) !== "\r" && this.peek(0) !== "\0") {
-          this.advance();
-        }
+        while (this.peek(0) !== "\n" && this.peek(0) !== "\r" && this.peek(0) !== "\0") this.advance();
         continue;
       }
       break;
@@ -408,9 +369,7 @@ class Lexer {
 
   readIdentifier() {
     let s = "";
-    while (isAlphaNum(this.peek(0))) {
-      s += this.advance();
-    }
+    while (isAlphaNum(this.peek(0))) s += this.advance();
     return s;
   }
 
@@ -425,19 +384,14 @@ class Lexer {
   }
 
   readString() {
-    // opening quote already peeked
-    this.advance(); // consume "
+    this.advance(); // opening "
     let s = "";
     while (true) {
       const ch = this.peek(0);
       if (ch === "\0" || ch === "\n" || ch === "\r") {
         fail("SyntaxError", "Unterminated string literal", makeSpan(clonePos(this.pos), clonePos(this.pos)), this.fileName, this.source);
       }
-      if (ch === "\"") {
-        this.advance(); // closing
-        break;
-      }
-      // simple escapes (optional)
+      if (ch === "\"") { this.advance(); break; }
       if (ch === "\\" && this.peek(1) === "\"") {
         this.advance(); this.advance();
         s += "\"";
@@ -488,7 +442,7 @@ const ContinueStmt = (span) => node("Continue", span, {});
 const GuardStmt = (span, condition) => node("Guard", span, { condition });
 const ExprStmt = (span, expr) => node("ExprStmt", span, { expr });
 
-// Shortcut statements (parsed explicitly, then lowered)
+// Shortcut statements
 const WhenSugar = (span, condExpr, block) => node("WhenSugar", span, { condExpr, block });
 const MaybeSugar = (span, valueExpr, binderName, block) => node("MaybeSugar", span, { valueExpr, binderName, block });
 const LoopSugar = (span, iterExpr, binderName, indexName, block) => node("LoopSugar", span, { iterExpr, binderName, indexName, block });
@@ -512,14 +466,14 @@ const Group = (span, expr) => node("Group", span, { expr });
 const ListLit = (span, elements) => node("List", span, { elements });
 const ArrowFn = (span, params, body) => node("ArrowFn", span, { params, body });
 
-const ObjectLit = (span, fields) => node("ObjectLiteral", span, { fields }); // fields: [{name, value}]
+const ObjectLit = (span, fields) => node("ObjectLiteral", span, { fields });
 
 // Frontend structure
 const Element = (span, tag, id, attributes, children) => node("Element", span, { tag, id, attributes, children });
 const SelfClosing = (span, tag, id, attributes) => node("SelfClosing", span, { tag, id, attributes });
 const TextNode = (span, value) => node("Text", span, { value });
 const LogicNode = (span, block) => node("Logic", span, { block });
-const StyleNode = (span, rawText) => node("Style", span, { rawText }); // v0.1: store raw; validate later
+const StyleNode = (span, rawText) => node("Style", span, { rawText });
 const Attribute = (span, name, valueExpr) => node("Attribute", span, { name, value: valueExpr });
 
 // ======================================================
@@ -532,19 +486,16 @@ class Parser {
     this.source = source;
     this.fileName = fileName;
     this.i = 0;
-    this.mode = "BACKEND"; // default
+    this.mode = "BACKEND";
   }
 
   cur() { return this.tokens[this.i]; }
   peek(n = 1) { return this.tokens[this.i + n] ?? this.tokens[this.tokens.length - 1]; }
   at(type) { return this.cur().type === type; }
-  match(type) { if (this.at(type)) { return this.advance(); } return null; }
+  match(type) { if (this.at(type)) return this.advance(); return null; }
   advance() { const t = this.cur(); this.i++; return t; }
   expect(type, msg) {
-    if (!this.at(type)) {
-      const t = this.cur();
-      fail("SyntaxError", msg ?? `Expected ${type} but got ${t.type}`, t.span, this.fileName, this.source);
-    }
+    if (!this.at(type)) fail("SyntaxError", msg ?? `Expected ${type} but got ${this.cur().type}`, this.cur().span, this.fileName, this.source);
     return this.advance();
   }
 
@@ -553,31 +504,16 @@ class Parser {
   parseProgram() {
     const start = this.cur().span.start;
     const body = [];
-    while (!this.at(TK.EOF)) {
-      body.push(this.parseTopLevel());
-    }
+    while (!this.at(TK.EOF)) body.push(this.parseTopLevel());
     const end = this.cur().span.end;
     return Program(makeSpan(start, end), this.mode, body);
   }
 
   parseTopLevel() {
-    // mode directives
-    if (this.at(TK.MODE_FRONTEND)) {
-      const t = this.advance();
-      this.mode = "FRONTEND";
-      return node("ModeDirective", t.span, { mode: "FRONTEND" });
-    }
-    if (this.at(TK.MODE_BACKEND)) {
-      const t = this.advance();
-      this.mode = "BACKEND";
-      return node("ModeDirective", t.span, { mode: "BACKEND" });
-    }
+    if (this.at(TK.MODE_FRONTEND)) { const t = this.advance(); this.mode = "FRONTEND"; return node("ModeDirective", t.span, { mode: "FRONTEND" }); }
+    if (this.at(TK.MODE_BACKEND)) { const t = this.advance(); this.mode = "BACKEND"; return node("ModeDirective", t.span, { mode: "BACKEND" }); }
 
-    // frontend structure
-    if (this.mode === "FRONTEND" && this.at(TK.LT)) {
-      return this.parseStructureNode();
-    }
-    // enforce: no structure tokens in backend
+    if (this.mode === "FRONTEND" && this.at(TK.LT)) return this.parseStructureNode();
     if (this.mode === "BACKEND" && (this.at(TK.LT) || this.at(TK.LT_SLASH) || this.at(TK.GT) || this.at(TK.SLASH_GT))) {
       fail("SyntaxError", "Structure tags < > are not allowed in backend mode. Use @frontend to enable.", this.cur().span, this.fileName, this.source);
     }
@@ -589,25 +525,20 @@ class Parser {
     return this.parseStatement();
   }
 
-  startsDecl() {
-    return this.at(TK.LET) || this.at(TK.FN) || this.at(TK.TYPE);
-  }
+  startsDecl() { return this.at(TK.LET) || this.at(TK.FN) || this.at(TK.TYPE); }
 
   parseTaggedThing() {
     const start = this.cur().span.start;
     const tags = [];
-    while (this.at(TK.AT)) {
-      tags.push(this.parseTag());
-    }
+    while (this.at(TK.AT)) tags.push(this.parseTag());
+
     if (this.startsDecl()) {
       const decl = this.parseDecl();
-      const end = decl.span.end;
-      return TaggedDecl(makeSpan(start, end), tags, decl);
+      return TaggedDecl(makeSpan(start, decl.span.end), tags, decl);
     }
     if (this.at(TK.LBRACE)) {
       const blk = this.parseBlock();
-      const end = blk.span.end;
-      return TaggedBlock(makeSpan(start, end), tags, blk);
+      return TaggedBlock(makeSpan(start, blk.span.end), tags, blk);
     }
     fail("SyntaxError", "Tag(s) must apply to a declaration or a block.", this.cur().span, this.fileName, this.source);
   }
@@ -619,13 +550,12 @@ class Parser {
     if (this.match(TK.LPAREN)) {
       if (!this.at(TK.RPAREN)) {
         args.push(this.parseExpression());
-        while (this.match(TK.COMMA)) {
-          args.push(this.parseExpression());
-        }
+        while (this.match(TK.COMMA)) args.push(this.parseExpression());
       }
       this.expect(TK.RPAREN, "Expected ')' after tag args.");
     }
-    return Tag(makeSpan(atTok.span.start, (args.at(-1)?.span.end ?? nameTok.span.end)), nameTok.value, args);
+    const end = (args.at(-1)?.span.end ?? nameTok.span.end);
+    return Tag(makeSpan(atTok.span.start, end), nameTok.value, args);
   }
 
   parseDecl() {
@@ -643,7 +573,8 @@ class Parser {
     let init = null;
     if (this.match(TK.ASSIGN)) init = this.parseExpression();
     this.optionalSemicolon();
-    return VarDecl(makeSpan(letTok.span.start, (init?.span.end ?? (typeRef?.span.end ?? nameTok.span.end))), nameTok.value, typeRef, init);
+    const end = (init?.span.end ?? (typeRef?.span.end ?? nameTok.span.end));
+    return VarDecl(makeSpan(letTok.span.start, end), nameTok.value, typeRef, init);
   }
 
   parseFnDecl() {
@@ -670,7 +601,8 @@ class Parser {
     if (this.match(TK.COLON)) typeRef = this.parseTypeRef();
     let def = null;
     if (this.match(TK.ASSIGN)) def = this.parseExpression();
-    return Param(makeSpan(nameTok.span.start, (def?.span.end ?? (typeRef?.span.end ?? nameTok.span.end))), nameTok.value, typeRef, def);
+    const end = (def?.span.end ?? (typeRef?.span.end ?? nameTok.span.end));
+    return Param(makeSpan(nameTok.span.start, end), nameTok.value, typeRef, def);
   }
 
   parseTypeDecl() {
@@ -690,28 +622,29 @@ class Parser {
     return TypeDecl(makeSpan(tTok.span.start, rTok.span.end), nameTok.value, fields);
   }
 
+  // --------- NEW: Type grammar ----------
+  // TypeRef        := NullableType ("|" NullableType)*
+  // NullableType   := PrimaryType "?"?
+  // PrimaryType    := IDENT
   parseTypeRef() {
-    // UnionType = NullableType (| NullableType)*
     const start = this.cur().span.start;
     let left = this.parseNullableType();
     const options = [left];
-    while (this.match(TK.OR)) { // re-use OR token '||'? no; unions use '|' in spec, but lexer doesn't include '|'
-      // Not supported here because we removed single '|'. Keep unions minimal for now.
-      // If you later add single '|' token, implement here.
-      fail("SyntaxError", "Union types with '|' are not enabled in this implementation yet.", this.cur().span, this.fileName, this.source);
+    while (this.match(TK.BITOR)) {
+      options.push(this.parseNullableType());
     }
-    // NullableType: PrimaryType '?'
-    // Implement '?' as part of nullable types? We didn't lex single '?' token.
-    // We'll support nullable via suffix '?' inside IDENT tokens (e.g., User?)? Not desired.
-    // So: v0.1 in this implementation supports nullable only as 'TypeName?' NOT enabled.
-    // We'll keep nullable out for now and rely on runtime null + optional access.
-    // However, you asked for optional types like TS; we can support `TypeName?` by lexing '?'.
-    fail("SyntaxError", "Type parsing needs '?' (nullable) and '|' (union) tokens not yet enabled. For now, use base types (number/string/bool) and named types without ? or |.", makeSpan(start, this.cur().span.end), this.fileName, this.source);
+    if (options.length > 1) {
+      return UnionType(makeSpan(start, options.at(-1).span.end), options);
+    }
+    return left;
   }
 
   parseNullableType() {
-    // unreachable in this file version (see parseTypeRef)
-    return this.parsePrimaryType();
+    let base = this.parsePrimaryType();
+    if (this.match(TK.QUESTION)) {
+      return NullableType(makeSpan(base.span.start, this.tokens[this.i - 1].span.end), base);
+    }
+    return base;
   }
 
   parsePrimaryType() {
@@ -720,7 +653,6 @@ class Parser {
       const nameTok = this.advance();
       return SimpleType(makeSpan(nameTok.span.start, nameTok.span.end), nameTok.value);
     }
-    // builtins are lexed as IDENT unless you want keywords; we can accept identifiers.
     fail("SyntaxError", "Expected type name.", t.span, this.fileName, this.source);
   }
 
@@ -735,28 +667,13 @@ class Parser {
     if (this.at(TK.UNTIL)) return this.parseUntil();
     if (this.at(TK.REPEAT)) return this.parseRepeat();
     if (this.at(TK.RETURN)) return this.parseReturn();
-    if (this.at(TK.BREAK)) {
-      const t = this.advance();
-      this.optionalSemicolon();
-      return BreakStmt(t.span);
-    }
-    if (this.at(TK.CONTINUE)) {
-      const t = this.advance();
-      this.optionalSemicolon();
-      return ContinueStmt(t.span);
-    }
+    if (this.at(TK.BREAK)) { const t = this.advance(); this.optionalSemicolon(); return BreakStmt(t.span); }
+    if (this.at(TK.CONTINUE)) { const t = this.advance(); this.optionalSemicolon(); return ContinueStmt(t.span); }
     if (this.at(TK.GUARD)) return this.parseGuard();
 
-    // expression statement, with shortcut detection requiring braces
     const expr = this.parseExpression();
     const start = expr.span.start;
 
-    // Shortcut forms require braces for readability:
-    //   (cond).when { ... }
-    //   val.maybe(name) { ... }
-    //   iter.loop(name[, idx]) { ... }
-    //
-    // We detect them here and parse the following Block immediately.
     if (this.at(TK.LBRACE)) {
       const sugar = this.tryParseSugarFromExpr(expr);
       if (sugar) return sugar;
@@ -819,9 +736,7 @@ class Parser {
   parseReturn() {
     const t = this.expect(TK.RETURN, "Expected return.");
     let val = null;
-    if (!this.at(TK.SEMICOLON) && !this.at(TK.RBRACE)) {
-      val = this.parseExpression();
-    }
+    if (!this.at(TK.SEMICOLON) && !this.at(TK.RBRACE)) val = this.parseExpression();
     this.optionalSemicolon();
     return ReturnStmt(makeSpan(t.span.start, (val?.span.end ?? t.span.end)), val);
   }
@@ -834,27 +749,16 @@ class Parser {
   }
 
   tryParseSugarFromExpr(expr) {
-    // expects next token is LBRACE (checked before calling)
-    // Recognize:
-    // - Access( condExpr, "when") with no call, OR Call(Access(condExpr,"when"), [])
-    // - Call(Access(valueExpr,"maybe"), [Identifier(name)])
-    // - Call(Access(iterExpr,"loop"), [Identifier(name)] or [Identifier(name), Identifier(idx)])
-    //
-    // We’ll accept both Access and Call forms for when; but .maybe/.loop must be Call.
     const block = this.parseBlock();
 
-    // When: expr is Access(obj,"when") OR Call(Access(obj,"when"),[])
     if (expr.kind === "Access" && expr.property === "when") {
       return WhenSugar(makeSpan(expr.span.start, block.span.end), expr.object, block);
     }
     if (expr.kind === "Call" && expr.callee.kind === "Access" && expr.callee.property === "when") {
-      if (expr.args.length !== 0) {
-        fail("SyntaxError", ".when does not take arguments.", expr.span, this.fileName, this.source);
-      }
+      if (expr.args.length !== 0) fail("SyntaxError", ".when does not take arguments.", expr.span, this.fileName, this.source);
       return WhenSugar(makeSpan(expr.span.start, block.span.end), expr.callee.object, block);
     }
 
-    // Maybe
     if (expr.kind === "Call" && expr.callee.kind === "Access" && expr.callee.property === "maybe") {
       if (expr.args.length !== 1 || expr.args[0].kind !== "Identifier") {
         fail("SyntaxError", ".maybe requires exactly one identifier binder: value.maybe(x) { ... }", expr.span, this.fileName, this.source);
@@ -862,25 +766,19 @@ class Parser {
       return MaybeSugar(makeSpan(expr.span.start, block.span.end), expr.callee.object, expr.args[0].name, block);
     }
 
-    // Loop
     if (expr.kind === "Call" && expr.callee.kind === "Access" && expr.callee.property === "loop") {
       if (expr.args.length < 1 || expr.args.length > 2) {
         fail("SyntaxError", ".loop requires 1 or 2 identifier binders: list.loop(item[, index]) { ... }", expr.span, this.fileName, this.source);
       }
-      if (expr.args[0].kind !== "Identifier") {
-        fail("SyntaxError", ".loop first argument must be an identifier binder name.", expr.span, this.fileName, this.source);
-      }
+      if (expr.args[0].kind !== "Identifier") fail("SyntaxError", ".loop first argument must be an identifier binder name.", expr.span, this.fileName, this.source);
       let idxName = null;
       if (expr.args.length === 2) {
-        if (expr.args[1].kind !== "Identifier") {
-          fail("SyntaxError", ".loop second argument must be an identifier binder name.", expr.span, this.fileName, this.source);
-        }
+        if (expr.args[1].kind !== "Identifier") fail("SyntaxError", ".loop second argument must be an identifier binder name.", expr.span, this.fileName, this.source);
         idxName = expr.args[1].name;
       }
       return LoopSugar(makeSpan(expr.span.start, block.span.end), expr.callee.object, expr.args[0].name, idxName, block);
     }
 
-    // Not a recognized sugar: return it as ExprStmt + Block?? We already consumed block, so error.
     fail("SyntaxError", "A block '{...}' after an expression is only allowed for .loop/.when/.maybe shortcuts.", block.span, this.fileName, this.source);
   }
 
@@ -893,7 +791,6 @@ class Parser {
   parseAssignment() {
     const left = this.parseOr();
     if (this.match(TK.ASSIGN)) {
-      const opTok = this.tokens[this.i - 1];
       const right = this.parseAssignment();
       return Assign(makeSpan(left.span.start, right.span.end), left, right);
     }
@@ -903,7 +800,6 @@ class Parser {
   parseOr() {
     let expr = this.parseAnd();
     while (this.match(TK.OR)) {
-      const opTok = this.tokens[this.i - 1];
       const right = this.parseAnd();
       expr = Binary(makeSpan(expr.span.start, right.span.end), "||", expr, right);
     }
@@ -1000,11 +896,8 @@ class Parser {
   }
 
   looksLikeArrowAfterParenStart(savedIndex) {
-    // crude lookahead: parse "(a, b) =>"
-    // savedIndex points at token after '('
     let j = savedIndex;
     if (this.tokens[j].type === TK.RPAREN && this.tokens[j + 1]?.type === TK.ARROW) return true;
-    // consume IDENT (, IDENT)*
     if (this.tokens[j].type !== TK.IDENT) return false;
     j++;
     while (this.tokens[j].type === TK.COMMA) {
@@ -1018,37 +911,18 @@ class Parser {
   parsePrimary() {
     const t = this.cur();
 
-    if (this.at(TK.NUMBER)) {
-      const tok = this.advance();
-      return NumberLit(tok.span, Number(tok.value));
-    }
-    if (this.at(TK.STRING)) {
-      const tok = this.advance();
-      return StringLit(tok.span, tok.value);
-    }
-    if (this.at(TK.TRUE)) {
-      const tok = this.advance();
-      return BoolLit(tok.span, true);
-    }
-    if (this.at(TK.FALSE)) {
-      const tok = this.advance();
-      return BoolLit(tok.span, false);
-    }
-    if (this.at(TK.NULL)) {
-      const tok = this.advance();
-      return NullLit(tok.span);
-    }
-    if (this.at(TK.OBJECT)) {
-      return this.parseObjectLiteral();
-    }
-    if (this.at(TK.IDENT)) {
-      const tok = this.advance();
-      return Ident(tok.span, tok.value);
-    }
+    if (this.at(TK.NUMBER)) { const tok = this.advance(); return NumberLit(tok.span, Number(tok.value)); }
+    if (this.at(TK.STRING)) { const tok = this.advance(); return StringLit(tok.span, tok.value); }
+    if (this.at(TK.TRUE)) { const tok = this.advance(); return BoolLit(tok.span, true); }
+    if (this.at(TK.FALSE)) { const tok = this.advance(); return BoolLit(tok.span, false); }
+    if (this.at(TK.NULL)) { const tok = this.advance(); return NullLit(tok.span); }
+    if (this.at(TK.OBJECT)) return this.parseObjectLiteral();
+    if (this.at(TK.IDENT)) { const tok = this.advance(); return Ident(tok.span, tok.value); }
+
     if (this.match(TK.LPAREN)) {
       const lTok = this.tokens[this.i - 1];
       const after = this.i;
-      // arrow fn?
+
       if (this.looksLikeArrowAfterParenStart(after)) {
         const params = [];
         if (!this.at(TK.RPAREN)) {
@@ -1059,19 +933,16 @@ class Parser {
             params.push(p2.value);
           }
         }
-        const rParen = this.expect(TK.RPAREN, "Expected ')' in arrow.");
+        this.expect(TK.RPAREN, "Expected ')' in arrow.");
         this.expect(TK.ARROW, "Expected '=>' after arrow params.");
         const body = this.parseExpression();
         return ArrowFn(makeSpan(lTok.span.start, body.span.end), params, body);
       }
 
-      // group or list
       const exprs = [];
       if (!this.at(TK.RPAREN)) {
         exprs.push(this.parseExpression());
-        while (this.match(TK.COMMA)) {
-          exprs.push(this.parseExpression());
-        }
+        while (this.match(TK.COMMA)) exprs.push(this.parseExpression());
       }
       const rTok = this.expect(TK.RPAREN, "Expected ')' after grouping/list.");
       if (exprs.length === 1) return Group(makeSpan(lTok.span.start, rTok.span.end), exprs[0]);
@@ -1083,7 +954,7 @@ class Parser {
 
   parseObjectLiteral() {
     const objTok = this.expect(TK.OBJECT, "Expected 'object'.");
-    const l = this.expect(TK.LBRACE, "Expected '{' after object.");
+    this.expect(TK.LBRACE, "Expected '{' after object.");
     const fields = [];
     while (!this.at(TK.RBRACE)) {
       const nameTok = this.expect(TK.IDENT, "Expected field name in object literal.");
@@ -1097,11 +968,10 @@ class Parser {
   }
 
   // ----------------------------
-  // Frontend structure parsing
+  // Frontend structure parsing (unchanged)
   // ----------------------------
 
   parseStructureNode() {
-    // <tag#id attr:value ...> children </tag>
     const lt = this.expect(TK.LT, "Expected '<' for structure.");
     const tagTok = this.expect(TK.IDENT, "Expected tag name.");
     let id = null;
@@ -1110,14 +980,9 @@ class Parser {
       id = idTok.value;
     }
     const attributes = [];
-    // attributes: ident : (string|number|bool|null|ident)
     while (this.at(TK.IDENT)) {
       const aName = this.advance();
-      if (!this.match(TK.COLON)) {
-        // not an attribute; likely end of tag content; stop
-        // But since we consumed IDENT, this is ambiguous. Keep it strict:
-        fail("SyntaxError", "Expected ':' after attribute name in structure tag.", aName.span, this.fileName, this.source);
-      }
+      if (!this.match(TK.COLON)) fail("SyntaxError", "Expected ':' after attribute name in structure tag.", aName.span, this.fileName, this.source);
       const v = this.parseAttrValueExpr();
       attributes.push(Attribute(makeSpan(aName.span.start, v.span.end), aName.value, v));
     }
@@ -1130,10 +995,8 @@ class Parser {
 
     const children = [];
     while (true) {
-      // closing tag?
       if (this.at(TK.LT_SLASH)) {
-        // consume </tag>
-        const closeTok = this.advance();
+        this.advance();
         const closeName = this.expect(TK.IDENT, "Expected closing tag name.");
         if (closeName.value !== tagTok.value) {
           fail("SyntaxError", `Mismatched closing tag. Expected </${tagTok.value}> but got </${closeName.value}>.`, closeName.span, this.fileName, this.source);
@@ -1143,47 +1006,31 @@ class Parser {
         return Element(makeSpan(lt.span.start, end), tagTok.value, id, attributes, children);
       }
 
-      // <logic> and <style> special
       if (this.at(TK.LT)) {
-        // Peek ahead to see if next token is IDENT of 'logic'/'style'
         const save = this.i;
-        this.advance(); // consume LT
-        if (!this.at(TK.IDENT)) {
-          // restore and parse normal?
-          this.i = save;
-          fail("SyntaxError", "Expected tag name after '<'.", this.cur().span, this.fileName, this.source);
-        }
+        this.advance();
+        if (!this.at(TK.IDENT)) { this.i = save; fail("SyntaxError", "Expected tag name after '<'.", this.cur().span, this.fileName, this.source); }
         const nameTok = this.advance();
         const tagName = nameTok.value;
-        // restore and parse appropriately
         this.i = save;
 
-        if (tagName === "logic") {
-          children.push(this.parseLogicNode());
-          continue;
-        }
-        if (tagName === "style") {
-          children.push(this.parseStyleNode());
-          continue;
-        }
+        if (tagName === "logic") { children.push(this.parseLogicNode()); continue; }
+        if (tagName === "style") { children.push(this.parseStyleNode()); continue; }
 
         children.push(this.parseStructureNode());
         continue;
       }
 
-      // text node: in this implementation, only STRING counts as structure text
       if (this.at(TK.STRING)) {
         const s = this.advance();
         children.push(TextNode(s.span, s.value));
         continue;
       }
 
-      // If we hit EOF or unexpected token inside structure
       if (this.at(TK.EOF)) {
         fail("SyntaxError", `Unterminated <${tagTok.value}> structure node. Missing closing tag.`, tagTok.span, this.fileName, this.source);
       }
 
-      // Otherwise, reject token
       fail("SyntaxError", "Only strings or nested tags are allowed as structure content (and <logic>/<style>).", this.cur().span, this.fileName, this.source);
     }
   }
@@ -1193,8 +1040,7 @@ class Parser {
     const nameTok = this.expect(TK.IDENT, "Expected logic tag name.");
     if (nameTok.value !== "logic") fail("SyntaxError", "Expected <logic>.", nameTok.span, this.fileName, this.source);
     this.expect(TK.GT, "Expected '>' after <logic.");
-    const block = this.parseBlock(); // requires { ... }
-    // </logic>
+    const block = this.parseBlock();
     this.expect(TK.LT_SLASH, "Expected </logic>.");
     const close = this.expect(TK.IDENT, "Expected closing tag name.");
     if (close.value !== "logic") fail("SyntaxError", "Expected </logic>.", close.span, this.fileName, this.source);
@@ -1209,11 +1055,7 @@ class Parser {
     if (nameTok.value !== "style") fail("SyntaxError", "Expected <style>.", nameTok.span, this.fileName, this.source);
     this.expect(TK.GT, "Expected '>' after <style>.");
 
-    // v0.1: store raw style content until </style>.
-    // We’ll gather tokens as text-ish: accept STRING tokens and IDENT tokens and punctuation until closing.
-    // For now, just read until we see LT_SLASH + IDENT(style) + GT sequence, and store the exact source slice by spans.
     const startPos = clonePos(this.cur().span.start);
-    // Find closing
     while (true) {
       if (this.at(TK.LT_SLASH) && this.peek(1).type === TK.IDENT && this.peek(1).value === "style") break;
       if (this.at(TK.EOF)) fail("SyntaxError", "Unterminated <style> block.", lt.span, this.fileName, this.source);
@@ -1222,7 +1064,6 @@ class Parser {
     const endPos = clonePos(this.cur().span.start);
     const rawText = this.source.slice(startPos.idx, endPos.idx);
 
-    // consume closing
     this.expect(TK.LT_SLASH, "Expected </style>.");
     const close = this.expect(TK.IDENT, "Expected closing tag name.");
     if (close.value !== "style") fail("SyntaxError", "Expected </style>.", close.span, this.fileName, this.source);
@@ -1233,50 +1074,24 @@ class Parser {
   }
 
   parseAttrValueExpr() {
-    // Accept STRING, NUMBER, TRUE/FALSE/NULL, IDENT
     const t = this.cur();
-    if (this.at(TK.STRING)) {
-      const tok = this.advance();
-      return StringLit(tok.span, tok.value);
-    }
-    if (this.at(TK.NUMBER)) {
-      const tok = this.advance();
-      return NumberLit(tok.span, Number(tok.value));
-    }
-    if (this.at(TK.TRUE)) {
-      const tok = this.advance();
-      return BoolLit(tok.span, true);
-    }
-    if (this.at(TK.FALSE)) {
-      const tok = this.advance();
-      return BoolLit(tok.span, false);
-    }
-    if (this.at(TK.NULL)) {
-      const tok = this.advance();
-      return NullLit(tok.span);
-    }
-    if (this.at(TK.IDENT)) {
-      const tok = this.advance();
-      return Ident(tok.span, tok.value);
-    }
+    if (this.at(TK.STRING)) { const tok = this.advance(); return StringLit(tok.span, tok.value); }
+    if (this.at(TK.NUMBER)) { const tok = this.advance(); return NumberLit(tok.span, Number(tok.value)); }
+    if (this.at(TK.TRUE)) { const tok = this.advance(); return BoolLit(tok.span, true); }
+    if (this.at(TK.FALSE)) { const tok = this.advance(); return BoolLit(tok.span, false); }
+    if (this.at(TK.NULL)) { const tok = this.advance(); return NullLit(tok.span); }
+    if (this.at(TK.IDENT)) { const tok = this.advance(); return Ident(tok.span, tok.value); }
     fail("SyntaxError", "Invalid attribute value.", t.span, this.fileName, this.source);
   }
 }
 
 // ======================================================
-// 6) Desugaring (Lowering)
+// 6) Desugaring (Lowering) — unchanged from your version
 // ======================================================
 
 class Desugar {
-  constructor(fileName, source) {
-    this.fileName = fileName;
-    this.source = source;
-    this.tmpId = 0;
-  }
-  fresh(prefix = "__tmp") {
-    this.tmpId += 1;
-    return `${prefix}${this.tmpId}`;
-  }
+  constructor(fileName, source) { this.fileName = fileName; this.source = source; this.tmpId = 0; }
+  fresh(prefix = "__tmp") { this.tmpId += 1; return `${prefix}${this.tmpId}`; }
 
   lowerProgram(p) {
     const body = p.body.map(n => this.lowerNode(n)).flat();
@@ -1284,36 +1099,7 @@ class Desugar {
   }
 
   lowerNode(n) {
-    switch (n.kind) {
-      case "ModeDirective":
-      case "VarDecl":
-      case "FnDecl":
-      case "TypeDecl":
-      case "TaggedDecl":
-      case "TaggedBlock":
-      case "ExprStmt":
-      case "If":
-      case "While":
-      case "Repeat":
-      case "Return":
-      case "Break":
-      case "Continue":
-      case "Block":
-      case "Element":
-      case "SelfClosing":
-      case "Text":
-      case "Style":
-      case "Logic":
-      case "Until":
-      case "Guard":
-      case "WhenSugar":
-      case "MaybeSugar":
-      case "LoopSugar":
-        break;
-      default:
-        return [n];
-    }
-
+    if (!n || typeof n !== "object") return [n];
     if (n.kind === "Block") return [this.lowerBlock(n)];
     if (n.kind === "Until") return [this.lowerUntil(n)];
     if (n.kind === "Guard") return [this.lowerGuard(n)];
@@ -1321,63 +1107,41 @@ class Desugar {
     if (n.kind === "MaybeSugar") return [this.lowerMaybe(n)];
     if (n.kind === "LoopSugar") return [this.lowerLoop(n)];
 
-    if (n.kind === "If") {
-      return [IfStmt(n.span, this.lowerExpr(n.condition), this.lowerBlock(n.thenBlock), n.elseBlock ? this.lowerBlock(n.elseBlock) : null)];
-    }
-    if (n.kind === "While") {
-      return [WhileStmt(n.span, this.lowerExpr(n.condition), this.lowerBlock(n.body))];
-    }
-    if (n.kind === "Repeat") {
-      return [RepeatStmt(n.span, this.lowerExpr(n.count), this.lowerBlock(n.body))];
-    }
-    if (n.kind === "Return") {
-      return [ReturnStmt(n.span, n.value ? this.lowerExpr(n.value) : null)];
-    }
-    if (n.kind === "ExprStmt") {
-      return [ExprStmt(n.span, this.lowerExpr(n.expr))];
-    }
-    if (n.kind === "VarDecl") {
-      return [VarDecl(n.span, n.name, n.type, n.init ? this.lowerExpr(n.init) : null)];
-    }
-    if (n.kind === "FnDecl") {
-      return [FnDecl(n.span, n.name, n.params.map(p => Param(p.span, p.name, p.type, p.defaultValue ? this.lowerExpr(p.defaultValue) : null)), n.returnType, this.lowerBlock(n.body))];
-    }
+    if (n.kind === "If") return [IfStmt(n.span, this.lowerExpr(n.condition), this.lowerBlock(n.thenBlock), n.elseBlock ? this.lowerBlock(n.elseBlock) : null)];
+    if (n.kind === "While") return [WhileStmt(n.span, this.lowerExpr(n.condition), this.lowerBlock(n.body))];
+    if (n.kind === "Repeat") return [RepeatStmt(n.span, this.lowerExpr(n.count), this.lowerBlock(n.body))];
+    if (n.kind === "Return") return [ReturnStmt(n.span, n.value ? this.lowerExpr(n.value) : null)];
+    if (n.kind === "ExprStmt") return [ExprStmt(n.span, this.lowerExpr(n.expr))];
+
+    if (n.kind === "VarDecl") return [VarDecl(n.span, n.name, n.type, n.init ? this.lowerExpr(n.init) : null)];
+    if (n.kind === "FnDecl") return [FnDecl(n.span, n.name, n.params.map(p => Param(p.span, p.name, p.type, p.defaultValue ? this.lowerExpr(p.defaultValue) : null)), n.returnType, this.lowerBlock(n.body))];
+
     if (n.kind === "TaggedDecl") {
       const loweredDecl = this.lowerNode(n.decl);
-      if (loweredDecl.length !== 1) return loweredDecl; // shouldn't happen
-      return [TaggedDecl(n.span, n.tags.map(t => Tag(t.span, t.name, t.args.map(a => this.lowerExpr(a)))), loweredDecl[0])];
+      const decl = loweredDecl[0] ?? n.decl;
+      return [TaggedDecl(n.span, n.tags.map(t => Tag(t.span, t.name, t.args.map(a => this.lowerExpr(a)))), decl)];
     }
     if (n.kind === "TaggedBlock") {
       return [TaggedBlock(n.span, n.tags.map(t => Tag(t.span, t.name, t.args.map(a => this.lowerExpr(a)))), this.lowerBlock(n.block))];
     }
+
     if (n.kind === "Element") {
       const children = [];
       for (const c of n.children) {
-        if (c.kind === "Logic") {
-          // lower inside logic block
-          children.push(LogicNode(c.span, this.lowerBlock(c.block)));
-        } else if (c.kind === "Element" || c.kind === "SelfClosing" || c.kind === "Text" || c.kind === "Style") {
-          children.push(this.lowerNode(c)[0] ?? c);
-        } else {
-          children.push(c);
-        }
+        if (c.kind === "Logic") children.push(LogicNode(c.span, this.lowerBlock(c.block)));
+        else if (c.kind === "Element") children.push(this.lowerNode(c)[0]);
+        else children.push(c);
       }
       return [Element(n.span, n.tag, n.id, n.attributes, children)];
     }
-    if (n.kind === "Logic") {
-      return [LogicNode(n.span, this.lowerBlock(n.block))];
-    }
-    // structure nodes & others unchanged
+    if (n.kind === "Logic") return [LogicNode(n.span, this.lowerBlock(n.block))];
+
     return [n];
   }
 
   lowerBlock(b) {
-    // first lower each item, then flatten, then apply sugar lowering already handled by parser (nodes exist)
     const out = [];
-    for (const item of b.body) {
-      const lowered = this.lowerNode(item);
-      for (const x of lowered) out.push(x);
-    }
+    for (const item of b.body) this.lowerNode(item).forEach(x => out.push(x));
     return Block(b.span, out);
   }
 
@@ -1392,12 +1156,9 @@ class Desugar {
     return IfStmt(n.span, notCond, Block(n.span, [ret]), null);
   }
 
-  lowerWhen(n) {
-    return IfStmt(n.span, this.lowerExpr(n.condExpr), this.lowerBlock(n.block), null);
-  }
+  lowerWhen(n) { return IfStmt(n.span, this.lowerExpr(n.condExpr), this.lowerBlock(n.block), null); }
 
   lowerMaybe(n) {
-    // safe temp to avoid double-eval
     const tmp = this.fresh("__tmp");
     const tmpDecl = VarDecl(n.span, tmp, null, this.lowerExpr(n.valueExpr));
     const tmpId = Ident(n.span, tmp);
@@ -1409,13 +1170,10 @@ class Desugar {
   }
 
   lowerLoop(n) {
-    // Heuristic: number literal => numeric loop, else list-like loop via len/get
     const iter = this.lowerExpr(n.iterExpr);
-
     const isNumberLiteral = iter.kind === "Number";
     if (isNumberLiteral) return this.lowerNumericLoop(n, iter);
 
-    // list-like
     const itName = this.fresh("__it");
     const iName = this.fresh("__i");
     const itDecl = VarDecl(n.span, itName, null, iter);
@@ -1430,10 +1188,7 @@ class Desugar {
     const itemDecl = VarDecl(n.span, n.binderName, null, Call(n.span, Ident(n.span, "get"), [itId, iId]));
     const idxDecl = n.indexName ? VarDecl(n.span, n.indexName, null, iId) : null;
 
-    const inc = ExprStmt(
-      n.span,
-      Assign(n.span, iId, Binary(n.span, "+", iId, NumberLit(n.span, 1)))
-    );
+    const inc = ExprStmt(n.span, Assign(n.span, iId, Binary(n.span, "+", iId, NumberLit(n.span, 1))));
 
     const loweredBody = this.lowerBlock(n.block).body;
     const bodyItems = [itemDecl];
@@ -1478,40 +1233,24 @@ class Desugar {
       case "Null":
       case "Identifier":
         return e;
-      case "Group":
-        return Group(e.span, this.lowerExpr(e.expr));
-      case "List":
-        return ListLit(e.span, e.elements.map(x => this.lowerExpr(x)));
-      case "ObjectLiteral":
-        return ObjectLit(e.span, e.fields.map(f => ({ name: f.name, value: this.lowerExpr(f.value), span: f.span })));
-      case "Unary":
-        return Unary(e.span, e.operator, this.lowerExpr(e.expr));
-      case "Binary":
-        return Binary(e.span, e.operator, this.lowerExpr(e.left), this.lowerExpr(e.right));
-      case "Assign":
-        return Assign(e.span, this.lowerExpr(e.target), this.lowerExpr(e.value));
-      case "Access":
-        return Access(e.span, this.lowerExpr(e.object), e.property);
-      case "OptionalAccess":
-        return OptionalAccess(e.span, this.lowerExpr(e.object), e.property);
-      case "Call":
-        return Call(e.span, this.lowerExpr(e.callee), e.args.map(a => this.lowerExpr(a)));
-      case "ArrowFn":
-        return ArrowFn(e.span, e.params, this.lowerExpr(e.body));
-      default:
-        return e;
+      case "Group": return Group(e.span, this.lowerExpr(e.expr));
+      case "List": return ListLit(e.span, e.elements.map(x => this.lowerExpr(x)));
+      case "ObjectLiteral": return ObjectLit(e.span, e.fields.map(f => ({ name: f.name, value: this.lowerExpr(f.value), span: f.span })));
+      case "Unary": return Unary(e.span, e.operator, this.lowerExpr(e.expr));
+      case "Binary": return Binary(e.span, e.operator, this.lowerExpr(e.left), this.lowerExpr(e.right));
+      case "Assign": return Assign(e.span, this.lowerExpr(e.target), this.lowerExpr(e.value));
+      case "Access": return Access(e.span, this.lowerExpr(e.object), e.property);
+      case "OptionalAccess": return OptionalAccess(e.span, this.lowerExpr(e.object), e.property);
+      case "Call": return Call(e.span, this.lowerExpr(e.callee), e.args.map(a => this.lowerExpr(a)));
+      case "ArrowFn": return ArrowFn(e.span, e.params, this.lowerExpr(e.body));
+      default: return e;
     }
   }
 }
 
 // ======================================================
-// 7) Type checker (strict optional typing, v0.1 minimal)
+// 7) Type checker (strict optional typing + nullable/union)
 // ======================================================
-//
-// NOTE: This implementation enforces strictness for written types,
-// but keeps type syntax minimal in code (number/string/bool + named types),
-// and relies on object { ... } to validate named structural types.
-//
 
 const TYPE = Object.freeze({
   Unknown: { tag: "Unknown" },
@@ -1519,14 +1258,13 @@ const TYPE = Object.freeze({
   String: { tag: "String" },
   Bool: { tag: "Bool" },
   Null: { tag: "Null" },
-  // Named: { tag:"Named", name }
-  // Func: { tag:"Func", params:[Type], ret:Type }
-  // List: { tag:"List", elem:Type }
 });
 
 function TNamed(name) { return { tag: "Named", name }; }
 function TFunc(params, ret) { return { tag: "Func", params, ret }; }
 function TList(elem) { return { tag: "List", elem }; }
+function TNullable(base) { return { tag: "Nullable", base }; }
+function TUnion(options) { return { tag: "Union", options }; }
 
 function typeToString(t) {
   if (!t) return "Unknown";
@@ -1539,20 +1277,37 @@ function typeToString(t) {
     case "Named": return t.name;
     case "Func": return `fn(${t.params.map(typeToString).join(",")}):${typeToString(t.ret)}`;
     case "List": return `list<${typeToString(t.elem)}>`;
+    case "Nullable": return `${typeToString(t.base)}?`;
+    case "Union": return t.options.map(typeToString).join(" | ");
     default: return t.tag;
   }
+}
+
+function flattenUnion(opts) {
+  const out = [];
+  for (const o of opts) {
+    if (o.tag === "Union") out.push(...flattenUnion(o.options));
+    else out.push(o);
+  }
+  // dedupe by string key
+  const seen = new Set();
+  const deduped = [];
+  for (const t of out) {
+    const k = typeToString(t);
+    if (!seen.has(k)) { seen.add(k); deduped.push(t); }
+  }
+  return deduped;
 }
 
 class TypeEnv {
   constructor(parent = null) {
     this.parent = parent;
-    this.values = new Map(); // name -> { type: Type, strict: boolean }
-    this.types = parent ? parent.types : new Map(); // shared map for named types
-    this.funcs = parent ? parent.funcs : new Map(); // name -> function type
+    this.values = new Map(); // name -> { type, strict }
+    this.types = parent ? parent.types : new Map(); // shared
+    this.funcs = parent ? parent.funcs : new Map(); // shared
   }
   defineValue(name, type, strict) { this.values.set(name, { type, strict }); }
   setValue(name, type, strict) {
-    // set existing up chain
     if (this.values.has(name)) { this.values.set(name, { type, strict }); return true; }
     if (this.parent) return this.parent.setValue(name, type, strict);
     return false;
@@ -1565,70 +1320,57 @@ class TypeEnv {
 }
 
 class TypeChecker {
-  constructor(fileName, source) {
-    this.fileName = fileName;
-    this.source = source;
-  }
+  constructor(fileName, source) { this.fileName = fileName; this.source = source; }
 
   checkProgram(p) {
     const env = new TypeEnv(null);
 
-    // Install builtin function types
     env.funcs.set("print", TFunc([TYPE.Unknown], TYPE.Null));
     env.funcs.set("len", TFunc([TYPE.Unknown], TYPE.Number));
     env.funcs.set("get", TFunc([TYPE.Unknown, TYPE.Number], TYPE.Unknown));
 
-    // Collect type declarations first
     for (const n of p.body) this.collectTypes(n, env);
-
-    // Collect function signatures
     for (const n of p.body) this.collectFnSigs(n, env);
-
-    // Check everything
     for (const n of p.body) this.checkTopLevel(n, env);
-
-    return true;
   }
 
   collectTypes(n, env) {
+    if (!n || typeof n !== "object") return;
     if (n.kind === "TypeDecl") {
       const fields = new Map();
-      for (const f of n.fields) {
-        fields.set(f.name, this.resolveTypeRef(f.type, env));
-      }
+      for (const f of n.fields) fields.set(f.name, this.resolveTypeRef(f.type, env));
       env.types.set(n.name, { fields });
-    } else if (n.kind === "TaggedDecl") {
-      this.collectTypes(n.decl, env);
-    } else if (n.kind === "Element") {
-      for (const c of n.children) this.collectTypes(c, env);
-    } else if (n.kind === "Logic") {
-      this.collectTypes(n.block, env);
-    } else if (n.kind === "Block") {
-      for (const x of n.body) this.collectTypes(x, env);
+      return;
     }
+    if (n.kind === "TaggedDecl") return this.collectTypes(n.decl, env);
+    if (n.kind === "Element") for (const c of n.children) this.collectTypes(c, env);
+    if (n.kind === "Logic") return this.collectTypes(n.block, env);
+    if (n.kind === "Block") for (const x of n.body) this.collectTypes(x, env);
   }
 
   collectFnSigs(n, env) {
+    if (!n || typeof n !== "object") return;
     if (n.kind === "FnDecl") {
       const params = n.params.map(p => (p.type ? this.resolveTypeRef(p.type, env) : TYPE.Unknown));
       const ret = n.returnType ? this.resolveTypeRef(n.returnType, env) : TYPE.Unknown;
       env.funcs.set(n.name, TFunc(params, ret));
       env.defineValue(n.name, env.funcs.get(n.name), true);
-    } else if (n.kind === "TaggedDecl") {
-      this.collectFnSigs(n.decl, env);
-    } else if (n.kind === "Element") {
-      for (const c of n.children) this.collectFnSigs(c, env);
-    } else if (n.kind === "Logic") {
-      this.collectFnSigs(n.block, env);
-    } else if (n.kind === "Block") {
-      for (const x of n.body) this.collectFnSigs(x, env);
+      return;
     }
+    if (n.kind === "TaggedDecl") return this.collectFnSigs(n.decl, env);
+    if (n.kind === "Element") for (const c of n.children) this.collectFnSigs(c, env);
+    if (n.kind === "Logic") return this.collectFnSigs(n.block, env);
+    if (n.kind === "Block") for (const x of n.body) this.collectFnSigs(x, env);
   }
 
   checkTopLevel(n, env) {
+    if (!n || typeof n !== "object") return;
     switch (n.kind) {
       case "ModeDirective":
       case "TypeDecl":
+      case "Style":
+      case "Text":
+      case "SelfClosing":
         return;
       case "TaggedDecl":
         return this.checkTopLevel(n.decl, env);
@@ -1639,37 +1381,85 @@ class TypeChecker {
       case "FnDecl":
         return this.checkFnDecl(n, env);
       case "Element":
-        // Only check logic blocks (and nested types already collected)
         for (const c of n.children) this.checkTopLevel(c, env);
         return;
       case "Logic":
         return this.checkBlock(n.block, new TypeEnv(env), TYPE.Unknown);
-      case "Style":
-      case "Text":
-      case "SelfClosing":
-        return;
       default:
-        // statements at top-level are allowed
         return this.checkStmt(n, env, TYPE.Unknown);
     }
   }
 
   resolveTypeRef(tref, env) {
-    // This implementation uses only SimpleType nodes (number/string/bool/null + named)
-    if (tref.kind !== "SimpleType") {
-      fail("TypeError", "Only simple types are supported in this implementation (no ? or | yet).", tref.span, this.fileName, this.source);
+    if (!tref || typeof tref !== "object") return TYPE.Unknown;
+
+    if (tref.kind === "SimpleType") {
+      const name = tref.name;
+      const lower = name.toLowerCase();
+      if (lower === "number") return TYPE.Number;
+      if (lower === "string") return TYPE.String;
+      if (lower === "bool") return TYPE.Bool;
+      if (lower === "null") return TYPE.Null;
+
+      if (!env.types.has(name)) {
+        fail("TypeError", `Unknown type '${name}'.`, tref.span, this.fileName, this.source);
+      }
+      return TNamed(name);
     }
-    const name = tref.name;
-    const lower = name.toLowerCase();
-    if (lower === "number") return TYPE.Number;
-    if (lower === "string") return TYPE.String;
-    if (lower === "bool") return TYPE.Bool;
-    if (lower === "null") return TYPE.Null;
-    if (!env.types.has(name)) {
-      // allow forward-declared named types only if declared somewhere; otherwise error
-      fail("TypeError", `Unknown type '${name}'.`, tref.span, this.fileName, this.source);
+
+    if (tref.kind === "NullableType") {
+      return TNullable(this.resolveTypeRef(tref.base, env));
     }
-    return TNamed(name);
+
+    if (tref.kind === "UnionType") {
+      const options = tref.options.map(o => this.resolveTypeRef(o, env));
+      return TUnion(flattenUnion(options));
+    }
+
+    fail("TypeError", `Unsupported type node '${tref.kind}'.`, tref.span, this.fileName, this.source);
+  }
+
+  isAssignable(from, to) {
+    // Strict-optional typing rule:
+    if (to.tag === "Unknown") return true;
+    if (from.tag === "Unknown") return false;
+
+    // Nullable target
+    if (to.tag === "Nullable") {
+      return this.isAssignable(from, to.base) || from.tag === "Null";
+    }
+
+    // Nullable source
+    if (from.tag === "Nullable") {
+      // assigning Nullable(T) to X requires BOTH T and Null to be assignable to X
+      return this.isAssignable(from.base, to) && this.isAssignable(TYPE.Null, to);
+    }
+
+    // Union target: from must fit at least one option
+    if (to.tag === "Union") {
+      return to.options.some(opt => this.isAssignable(from, opt));
+    }
+
+    // Union source: every option must be assignable
+    if (from.tag === "Union") {
+      return from.options.every(opt => this.isAssignable(opt, to));
+    }
+
+    if (to.tag === from.tag) {
+      if (to.tag === "Named") return to.name === from.name;
+      if (to.tag === "List") return this.isAssignable(from.elem, to.elem);
+      if (to.tag === "Func") {
+        // simple: exact arity & param types and return assignable
+        if (from.params.length !== to.params.length) return false;
+        for (let i = 0; i < to.params.length; i++) {
+          if (!this.isAssignable(from.params[i], to.params[i])) return false;
+        }
+        return this.isAssignable(from.ret, to.ret);
+      }
+      return true;
+    }
+
+    return false;
   }
 
   checkVarDecl(n, env) {
@@ -1680,35 +1470,30 @@ class TypeChecker {
         if (rhs.tag === "Unknown") {
           fail("TypeError", `Cannot assign Unknown to typed variable '${n.name}: ${typeToString(declared)}'.`, n.init.span, this.fileName, this.source);
         }
-        if (!this.isAssignable(rhs, declared, env, n.init.span)) {
+        if (rhs.tag === "ObjectLiteral") {
+          if (declared.tag !== "Named") {
+            fail("TypeError", `Object literal can only be assigned to a named structural type; got ${typeToString(declared)}.`, n.init.span, this.fileName, this.source);
+          }
+          this.checkObjectLiteralAgainstNamed(n.init, declared.name, env);
+        } else if (!this.isAssignable(rhs, declared)) {
           fail("TypeError", `Cannot assign ${typeToString(rhs)} to ${typeToString(declared)}.`, n.init.span, this.fileName, this.source);
         }
       }
       env.defineValue(n.name, declared, true);
     } else {
-      // untyped: dynamic
       env.defineValue(n.name, TYPE.Unknown, false);
     }
   }
 
   checkFnDecl(n, env) {
-    const fnType = env.funcs.get(n.name) ?? TFunc([], TYPE.Unknown);
     const fnEnv = new TypeEnv(env);
-    // bind params
-    for (let i = 0; i < n.params.length; i++) {
-      const p = n.params[i];
+    for (const p of n.params) {
       const pt = p.type ? this.resolveTypeRef(p.type, env) : TYPE.Unknown;
       const strict = !!p.type;
-      if (p.defaultValue) {
+      if (p.defaultValue && strict) {
         const dt = this.typeOfExpr(p.defaultValue, env);
-        if (strict) {
-          if (dt.tag === "Unknown") {
-            fail("TypeError", `Cannot assign Unknown default to typed param '${p.name}: ${typeToString(pt)}'.`, p.defaultValue.span, this.fileName, this.source);
-          }
-          if (!this.isAssignable(dt, pt, env, p.defaultValue.span)) {
-            fail("TypeError", `Default value type ${typeToString(dt)} not assignable to ${typeToString(pt)} for param '${p.name}'.`, p.defaultValue.span, this.fileName, this.source);
-          }
-        }
+        if (dt.tag === "Unknown") fail("TypeError", `Cannot assign Unknown default to typed param '${p.name}: ${typeToString(pt)}'.`, p.defaultValue.span, this.fileName, this.source);
+        if (!this.isAssignable(dt, pt)) fail("TypeError", `Default value type ${typeToString(dt)} not assignable to ${typeToString(pt)} for param '${p.name}'.`, p.defaultValue.span, this.fileName, this.source);
       }
       fnEnv.defineValue(p.name, pt, strict);
     }
@@ -1716,17 +1501,22 @@ class TypeChecker {
     const expectedRet = n.returnType ? this.resolveTypeRef(n.returnType, env) : TYPE.Unknown;
     this.checkBlock(n.body, fnEnv, expectedRet);
 
-    // If return type is written, enforce that falling off end is only allowed if return type is Unknown or null
     if (n.returnType) {
-      // v0.1: require explicit return somewhere OR allow fall-through only for null return type
-      if (expectedRet.tag !== "Null" && expectedRet.tag !== "Unknown") {
-        // not doing full control-flow analysis; require at least one return statement encountered
+      // v0.1 practical rule: if return type isn't nullable/union-with-null, require at least one return statement
+      if (!this.canBeNull(expectedRet)) {
         const hasReturn = this.blockHasReturn(n.body);
         if (!hasReturn) {
           fail("TypeError", `Function '${n.name}' declares return type ${typeToString(expectedRet)} but has no return statement.`, n.body.span, this.fileName, this.source);
         }
       }
     }
+  }
+
+  canBeNull(t) {
+    if (t.tag === "Null") return true;
+    if (t.tag === "Nullable") return true;
+    if (t.tag === "Union") return t.options.some(o => this.canBeNull(o));
+    return false;
   }
 
   blockHasReturn(b) {
@@ -1756,6 +1546,7 @@ class TypeChecker {
     switch (s.kind) {
       case "Block":
         return this.checkBlock(s, new TypeEnv(env), expectedRet);
+
       case "If": {
         const ct = this.typeOfExpr(s.condition, env);
         if (ct.tag !== "Unknown" && ct.tag !== "Bool") {
@@ -1765,6 +1556,7 @@ class TypeChecker {
         if (s.elseBlock) this.checkBlock(s.elseBlock, new TypeEnv(env), expectedRet);
         return;
       }
+
       case "While": {
         const ct = this.typeOfExpr(s.condition, env);
         if (ct.tag !== "Unknown" && ct.tag !== "Bool") {
@@ -1773,6 +1565,7 @@ class TypeChecker {
         this.checkBlock(s.body, new TypeEnv(env), expectedRet);
         return;
       }
+
       case "Repeat": {
         const nt = this.typeOfExpr(s.count, env);
         if (nt.tag !== "Unknown" && nt.tag !== "Number") {
@@ -1781,10 +1574,11 @@ class TypeChecker {
         this.checkBlock(s.body, new TypeEnv(env), expectedRet);
         return;
       }
+
       case "Return": {
-        if (expectedRet.tag === "Unknown") return; // untyped function
+        if (expectedRet.tag === "Unknown") return;
         if (!s.value) {
-          if (expectedRet.tag !== "Null") {
+          if (!this.canBeNull(expectedRet)) {
             fail("TypeError", `Return requires a value of type ${typeToString(expectedRet)}.`, s.span, this.fileName, this.source);
           }
           return;
@@ -1793,35 +1587,31 @@ class TypeChecker {
         if (rt.tag === "Unknown") {
           fail("TypeError", `Cannot return Unknown from typed function expecting ${typeToString(expectedRet)}.`, s.value.span, this.fileName, this.source);
         }
-        if (!this.isAssignable(rt, expectedRet, env, s.value.span)) {
+        if (rt.tag === "ObjectLiteral") {
+          // returning object literal requires expected return to be Named
+          if (expectedRet.tag !== "Named") {
+            fail("TypeError", `Object literal return requires named structural return type; got ${typeToString(expectedRet)}.`, s.value.span, this.fileName, this.source);
+          }
+          this.checkObjectLiteralAgainstNamed(s.value, expectedRet.name, env);
+          return;
+        }
+        if (!this.isAssignable(rt, expectedRet)) {
           fail("TypeError", `Return type ${typeToString(rt)} not assignable to ${typeToString(expectedRet)}.`, s.value.span, this.fileName, this.source);
         }
         return;
       }
+
       case "ExprStmt":
-        this.typeOfExpr(s.expr, env); // for checking side effects in typed contexts
+        this.typeOfExpr(s.expr, env);
         return;
+
       case "Break":
       case "Continue":
         return;
+
       default:
         return;
     }
-  }
-
-  isAssignable(from, to, env, span) {
-    if (to.tag === "Unknown") return true;
-    if (from.tag === "Unknown") return false;
-
-    if (to.tag === from.tag) {
-      if (to.tag === "Named") return to.name === from.name;
-      if (to.tag === "List") return this.isAssignable(from.elem, to.elem, env, span);
-      return true;
-    }
-
-    // object literal to named type check happens elsewhere (when from is a special structural map),
-    // but in this simple version we handle only named matches.
-    return false;
   }
 
   typeOfExpr(e, env) {
@@ -1830,29 +1620,30 @@ class TypeChecker {
       case "String": return TYPE.String;
       case "Bool": return TYPE.Bool;
       case "Null": return TYPE.Null;
+
       case "Identifier": {
         const v = env.lookupValue(e.name);
         if (v) return v.type;
-        // Builtins:
         if (env.funcs.has(e.name)) return env.funcs.get(e.name);
         return TYPE.Unknown;
       }
-      case "Group":
-        return this.typeOfExpr(e.expr, env);
+
+      case "Group": return this.typeOfExpr(e.expr, env);
+
       case "List": {
-        // infer union-ish as Unknown if mixed; we’ll just compute best common:
         if (e.elements.length === 0) return TList(TYPE.Unknown);
         let elemT = this.typeOfExpr(e.elements[0], env);
         for (let i = 1; i < e.elements.length; i++) {
           const t = this.typeOfExpr(e.elements[i], env);
           if (t.tag === "Unknown" || elemT.tag === "Unknown") { elemT = TYPE.Unknown; break; }
-          if (t.tag !== elemT.tag) { elemT = TYPE.Unknown; break; }
+          if (!this.isAssignable(t, elemT) || !this.isAssignable(elemT, t)) { elemT = TYPE.Unknown; break; }
         }
         return TList(elemT);
       }
+
       case "ObjectLiteral":
-        // only checked strictly when assigned to named type
         return { tag: "ObjectLiteral" };
+
       case "Unary": {
         const t = this.typeOfExpr(e.expr, env);
         if (t.tag === "Unknown") return TYPE.Unknown;
@@ -1866,15 +1657,17 @@ class TypeChecker {
         }
         return TYPE.Unknown;
       }
+
       case "Binary": {
         const lt = this.typeOfExpr(e.left, env);
         const rt = this.typeOfExpr(e.right, env);
-        // If either Unknown, keep Unknown unless operator implies Bool and both typed?
+
         if (lt.tag === "Unknown" || rt.tag === "Unknown") {
-          // allow dynamic; for &&/|| comparisons in typed contexts we will catch at usage points if needed
+          // dynamic allowed
           if (["==", "!=", "<", "<=", ">", ">=", "&&", "||"].includes(e.operator)) return TYPE.Unknown;
           return TYPE.Unknown;
         }
+
         switch (e.operator) {
           case "+":
             if (lt.tag === "Number" && rt.tag === "Number") return TYPE.Number;
@@ -1908,13 +1701,13 @@ class TypeChecker {
             return TYPE.Unknown;
         }
       }
+
       case "Assign": {
-        // target must be Identifier or Access
         const rhs = this.typeOfExpr(e.value, env);
+
         if (e.target.kind === "Identifier") {
           const entry = env.lookupValue(e.target.name);
           if (!entry) {
-            // dynamic implicit declare? NO. Create dynamic if unseen (v0.1 convenience).
             env.defineValue(e.target.name, TYPE.Unknown, false);
             return rhs;
           }
@@ -1922,36 +1715,34 @@ class TypeChecker {
             if (rhs.tag === "Unknown") {
               fail("TypeError", `Cannot assign Unknown to typed variable '${e.target.name}: ${typeToString(entry.type)}'.`, e.value.span, this.fileName, this.source);
             }
-            // object literal assignment to named type
             if (rhs.tag === "ObjectLiteral") {
-              // enforce rhs fields against named type
               if (entry.type.tag !== "Named") {
                 fail("TypeError", `Object literal can only be assigned to a named structural type; got ${typeToString(entry.type)}.`, e.value.span, this.fileName, this.source);
               }
               this.checkObjectLiteralAgainstNamed(e.value, entry.type.name, env);
               return entry.type;
             }
-            if (!this.isAssignable(rhs, entry.type, env, e.span)) {
+            if (!this.isAssignable(rhs, entry.type)) {
               fail("TypeError", `Cannot assign ${typeToString(rhs)} to ${typeToString(entry.type)}.`, e.value.span, this.fileName, this.source);
             }
             return entry.type;
           }
-          // dynamic var: allow
           return rhs;
         }
+
         if (e.target.kind === "Access" || e.target.kind === "OptionalAccess") {
-          // property assignment not type-checked in v0.1
-          return rhs;
+          return rhs; // property assignment not enforced v0.1
         }
+
         fail("TypeError", "Invalid assignment target.", e.target.span, this.fileName, this.source);
       }
+
       case "Access":
       case "OptionalAccess":
-        // If object is named type and property exists, we can type it; else Unknown
-        return TYPE.Unknown;
+        return this.typeOfAccess(e, env);
+
       case "Call": {
         const calleeT = this.typeOfExpr(e.callee, env);
-        // builtin by identifier name
         if (e.callee.kind === "Identifier" && env.funcs.has(e.callee.name)) {
           const fnT = env.funcs.get(e.callee.name);
           this.checkCallArgs(e, fnT, env);
@@ -1963,22 +1754,58 @@ class TypeChecker {
         }
         return TYPE.Unknown;
       }
+
       case "ArrowFn":
-        // v0.1: untyped arrow returns Unknown
         return TFunc(e.params.map(() => TYPE.Unknown), TYPE.Unknown);
+
       default:
         return TYPE.Unknown;
     }
   }
 
+  typeOfAccess(e, env) {
+    // Try to resolve property types for named types (and nullable/union wrappers)
+    const objT = this.typeOfExpr(e.object, env);
+    const prop = e.property;
+
+    const resolveProp = (t) => {
+      if (t.tag === "Named") {
+        const def = env.types.get(t.name);
+        if (!def) return TYPE.Unknown;
+        return def.fields.get(prop) ?? TYPE.Unknown;
+      }
+      if (t.tag === "Nullable") {
+        const inner = resolveProp(t.base);
+        return TNullable(inner);
+      }
+      if (t.tag === "Union") {
+        const opts = t.options.map(resolveProp);
+        return TUnion(flattenUnion(opts));
+      }
+      return TYPE.Unknown;
+    };
+
+    let pt = resolveProp(objT);
+
+    if (e.kind === "OptionalAccess") {
+      // optional access ALWAYS returns nullable if we can type it; else Unknown
+      if (pt.tag === "Unknown") return TYPE.Unknown;
+      return TNullable(pt.tag === "Nullable" ? pt.base : pt);
+    }
+
+    return pt;
+  }
+
   checkCallArgs(callNode, fnType, env) {
     if (fnType.tag !== "Func") return;
-    // allow variadic for print(len etc)? keep simple:
+
     if (callNode.callee.kind === "Identifier" && callNode.callee.name === "print") return;
+
     if (callNode.callee.kind === "Identifier" && callNode.callee.name === "len") {
       if (callNode.args.length !== 1) fail("TypeError", "len(x) takes exactly 1 argument.", callNode.span, this.fileName, this.source);
       return;
     }
+
     if (callNode.callee.kind === "Identifier" && callNode.callee.name === "get") {
       if (callNode.args.length !== 2) fail("TypeError", "get(list, index) takes exactly 2 arguments.", callNode.span, this.fileName, this.source);
       const idxT = this.typeOfExpr(callNode.args[1], env);
@@ -1998,7 +1825,7 @@ class TypeChecker {
       if (at.tag === "Unknown") {
         fail("TypeError", `Arg ${i + 1} is Unknown but param is typed ${typeToString(pt)}.`, callNode.args[i].span, this.fileName, this.source);
       }
-      if (!this.isAssignable(at, pt, env, callNode.args[i].span)) {
+      if (!this.isAssignable(at, pt)) {
         fail("TypeError", `Arg ${i + 1} type ${typeToString(at)} not assignable to ${typeToString(pt)}.`, callNode.args[i].span, this.fileName, this.source);
       }
     }
@@ -2007,10 +1834,10 @@ class TypeChecker {
   checkObjectLiteralAgainstNamed(objNode, typeName, env) {
     const def = env.types.get(typeName);
     if (!def) fail("TypeError", `Unknown type '${typeName}'.`, objNode.span, this.fileName, this.source);
+
     const provided = new Map();
-    for (const f of objNode.fields) {
-      provided.set(f.name, this.typeOfExpr(f.value, env));
-    }
+    for (const f of objNode.fields) provided.set(f.name, this.typeOfExpr(f.value, env));
+
     for (const [fieldName, fieldType] of def.fields.entries()) {
       if (!provided.has(fieldName)) {
         fail("TypeError", `Missing field '${fieldName}' for type ${typeName}.`, objNode.span, this.fileName, this.source);
@@ -2019,16 +1846,16 @@ class TypeChecker {
       if (vt.tag === "Unknown") {
         fail("TypeError", `Field '${fieldName}' is Unknown but must be ${typeToString(fieldType)} for type ${typeName}.`, objNode.span, this.fileName, this.source);
       }
-      if (!this.isAssignable(vt, fieldType, env, objNode.span)) {
+      if (!this.isAssignable(vt, fieldType)) {
         fail("TypeError", `Field '${fieldName}' type ${typeToString(vt)} not assignable to ${typeToString(fieldType)}.`, objNode.span, this.fileName, this.source);
       }
     }
-    // extra fields allowed in v0.1
+    // extra fields allowed
   }
 }
 
 // ======================================================
-// 8) Interpreter (lowered AST)
+// 8) Interpreter (same as your version)
 // ======================================================
 
 class ReturnSignal { constructor(value) { this.value = value; } }
@@ -2036,15 +1863,9 @@ class BreakSignal {}
 class ContinueSignal {}
 
 class RuntimeEnv {
-  constructor(parent = null) {
-    this.parent = parent;
-    this.values = new Map();
-  }
+  constructor(parent = null) { this.parent = parent; this.values = new Map(); }
   define(name, value) { this.values.set(name, value); }
-  lookup(name) {
-    if (this.values.has(name)) return this.values.get(name);
-    return this.parent ? this.parent.lookup(name) : undefined;
-  }
+  lookup(name) { return this.values.has(name) ? this.values.get(name) : (this.parent ? this.parent.lookup(name) : undefined); }
   assign(name, value) {
     if (this.values.has(name)) { this.values.set(name, value); return true; }
     if (this.parent) return this.parent.assign(name, value);
@@ -2052,9 +1873,7 @@ class RuntimeEnv {
   }
 }
 
-function isTruthy(v) {
-  return !(v === false || v === null);
-}
+function isTruthy(v) { return !(v === false || v === null); }
 
 class Interpreter {
   constructor(fileName, source) {
@@ -2065,10 +1884,7 @@ class Interpreter {
   }
 
   installBuiltins() {
-    this.global.define("print", (...args) => {
-      console.log(...args.map(this.stringify));
-      return null;
-    });
+    this.global.define("print", (...args) => { console.log(...args.map(this.stringify.bind(this))); return null; });
     this.global.define("len", (x) => {
       if (typeof x === "string") return x.length;
       if (Array.isArray(x)) return x.length;
@@ -2082,7 +1898,6 @@ class Interpreter {
       return list[i] ?? null;
     });
 
-    // Minimal ui helper for frontend mode (injected when needed)
     this.global.define("ui", {
       byId: Object.create(null),
       get: function (id) { return this.byId[id] ?? null; },
@@ -2110,27 +1925,17 @@ class Interpreter {
   }
 
   runFrontendProgram(p) {
-    // Build structure trees, collect ids into ui.byId, execute logic blocks in traversal order.
     const roots = [];
     for (const n of p.body) {
-      if (n.kind === "Element" || n.kind === "SelfClosing" || n.kind === "Text" || n.kind === "Style" || n.kind === "Logic") {
-        // structure node at top level
-        roots.push(n);
-      } else {
-        // allow logic/decls at top-level too
-        this.execTopLevel(n, this.global);
-      }
+      if (n.kind === "Element" || n.kind === "SelfClosing" || n.kind === "Text" || n.kind === "Style" || n.kind === "Logic") roots.push(n);
+      else this.execTopLevel(n, this.global);
     }
 
-    // Register IDs
     const ui = this.global.lookup("ui");
     ui.byId = Object.create(null);
     for (const r of roots) this.registerIds(r, ui.byId);
-
-    // Execute logic blocks
     for (const r of roots) this.execLogicBlocks(r, this.global);
 
-    // Return structure tree for future renderer use (not rendered in v0.1)
     return { roots, ui };
   }
 
@@ -2139,8 +1944,6 @@ class Interpreter {
     if (node.kind === "Element" || node.kind === "SelfClosing") {
       if (node.id) byId[node.id] = this.structureToRuntime(node);
       if (node.kind === "Element") for (const c of node.children) this.registerIds(c, byId);
-    } else if (node.kind === "Logic" || node.kind === "Style" || node.kind === "Text") {
-      // no ids inside directly
     }
   }
 
@@ -2171,7 +1974,6 @@ class Interpreter {
       case "SelfClosing":
       case "Element":
       case "Logic":
-        // frontend nodes handled elsewhere
         return;
       case "TaggedDecl":
         return this.execTopLevel(n.decl, env);
@@ -2200,28 +2002,20 @@ class Interpreter {
     const self = this;
     const fn = function (...args) {
       const callEnv = new RuntimeEnv(closureEnv);
-      for (let i = 0; i < paramNames.length; i++) {
-        callEnv.define(paramNames[i], i < args.length ? args[i] : null);
-      }
-      try {
-        self.execBlock(bodyBlock, callEnv);
-        return null;
-      } catch (sig) {
-        if (sig instanceof ReturnSignal) return sig.value;
-        throw sig;
-      }
+      for (let i = 0; i < paramNames.length; i++) callEnv.define(paramNames[i], i < args.length ? args[i] : null);
+      try { self.execBlock(bodyBlock, callEnv); return null; }
+      catch (sig) { if (sig instanceof ReturnSignal) return sig.value; throw sig; }
     };
     fn.__one = { kind: "UserFunction", params: paramNames, body: bodyBlock };
     return fn;
   }
 
   execBlock(b, env) {
-    // new scope
     const local = new RuntimeEnv(env);
     for (const item of b.body) {
       if (item.kind === "VarDecl") this.execVarDecl(item, local);
       else if (item.kind === "FnDecl") this.execFnDecl(item, local);
-      else if (item.kind === "TypeDecl") {/* ignore */}
+      else if (item.kind === "TypeDecl") {}
       else if (item.kind === "TaggedDecl") this.execTopLevel(item.decl, local);
       else if (item.kind === "TaggedBlock") this.execBlock(item.block, local);
       else this.execStmt(item, local);
@@ -2230,8 +2024,7 @@ class Interpreter {
 
   execStmt(s, env) {
     switch (s.kind) {
-      case "Block":
-        return this.execBlock(s, env);
+      case "Block": return this.execBlock(s, env);
       case "If": {
         const cond = this.evalExpr(s.condition, env);
         if (isTruthy(cond)) this.execBlock(s.thenBlock, env);
@@ -2240,9 +2033,8 @@ class Interpreter {
       }
       case "While": {
         while (isTruthy(this.evalExpr(s.condition, env))) {
-          try {
-            this.execBlock(s.body, env);
-          } catch (sig) {
+          try { this.execBlock(s.body, env); }
+          catch (sig) {
             if (sig instanceof BreakSignal) break;
             if (sig instanceof ContinueSignal) continue;
             throw sig;
@@ -2255,9 +2047,8 @@ class Interpreter {
         const count = Number(n);
         if (!Number.isFinite(count)) fail("RuntimeError", "repeat(count) requires numeric count.", s.count.span, this.fileName, this.source);
         for (let i = 0; i < count; i++) {
-          try {
-            this.execBlock(s.body, env);
-          } catch (sig) {
+          try { this.execBlock(s.body, env); }
+          catch (sig) {
             if (sig instanceof BreakSignal) break;
             if (sig instanceof ContinueSignal) continue;
             throw sig;
@@ -2265,19 +2056,11 @@ class Interpreter {
         }
         return;
       }
-      case "Return": {
-        const v = s.value ? this.evalExpr(s.value, env) : null;
-        throw new ReturnSignal(v);
-      }
-      case "Break":
-        throw new BreakSignal();
-      case "Continue":
-        throw new ContinueSignal();
-      case "ExprStmt":
-        this.evalExpr(s.expr, env);
-        return;
-      default:
-        return;
+      case "Return": throw new ReturnSignal(s.value ? this.evalExpr(s.value, env) : null);
+      case "Break": throw new BreakSignal();
+      case "Continue": throw new ContinueSignal();
+      case "ExprStmt": this.evalExpr(s.expr, env); return;
+      default: return;
     }
   }
 
@@ -2287,27 +2070,31 @@ class Interpreter {
       case "String": return e.value;
       case "Bool": return e.value;
       case "Null": return null;
+
       case "Identifier": {
         const v = env.lookup(e.name);
         if (v !== undefined) return v;
-        // allow access to globals
         const gv = this.global.lookup(e.name);
         if (gv !== undefined) return gv;
         fail("RuntimeError", `Undefined identifier '${e.name}'.`, e.span, this.fileName, this.source);
       }
+
       case "Group": return this.evalExpr(e.expr, env);
       case "List": return e.elements.map(x => this.evalExpr(x, env));
+
       case "ObjectLiteral": {
         const obj = Object.create(null);
         for (const f of e.fields) obj[f.name] = this.evalExpr(f.value, env);
         return obj;
       }
+
       case "Unary": {
         const v = this.evalExpr(e.expr, env);
         if (e.operator === "-") return -Number(v);
         if (e.operator === "!") return !isTruthy(v);
         return null;
       }
+
       case "Binary": {
         if (e.operator === "&&") {
           const left = this.evalExpr(e.left, env);
@@ -2335,14 +2122,12 @@ class Interpreter {
           default: return null;
         }
       }
+
       case "Assign": {
         const value = this.evalExpr(e.value, env);
         if (e.target.kind === "Identifier") {
           const ok = env.assign(e.target.name, value);
-          if (!ok) {
-            // allow implicit global define? No — define in current env
-            env.define(e.target.name, value);
-          }
+          if (!ok) env.define(e.target.name, value);
           return value;
         }
         if (e.target.kind === "Access") {
@@ -2353,22 +2138,26 @@ class Interpreter {
         }
         fail("RuntimeError", "Invalid assignment target.", e.target.span, this.fileName, this.source);
       }
+
       case "Access": {
         const obj = this.evalExpr(e.object, env);
         if (obj === null || obj === undefined) fail("RuntimeError", "Cannot access property on null.", e.span, this.fileName, this.source);
         return (typeof obj === "object" || typeof obj === "function") ? (obj[e.property] ?? null) : null;
       }
+
       case "OptionalAccess": {
         const obj = this.evalExpr(e.object, env);
         if (obj === null || obj === undefined) return null;
         return (typeof obj === "object" || typeof obj === "function") ? (obj[e.property] ?? null) : null;
       }
+
       case "Call": {
         const callee = this.evalExpr(e.callee, env);
         const args = e.args.map(a => this.evalExpr(a, env));
         if (typeof callee !== "function") fail("RuntimeError", "Attempted to call a non-function.", e.span, this.fileName, this.source);
         return callee(...args);
       }
+
       case "ArrowFn": {
         const self = this;
         const fn = function (...args) {
@@ -2379,6 +2168,7 @@ class Interpreter {
         fn.__one = { kind: "ArrowFn", params: e.params, body: e.body };
         return fn;
       }
+
       default:
         return null;
     }
@@ -2390,23 +2180,11 @@ class Interpreter {
 // ======================================================
 
 function runOne(source, fileName) {
-  const lexer = new Lexer(source, fileName);
-  const tokens = lexer.lex();
-
-  const parser = new Parser(tokens, source, fileName);
-  const ast = parser.parseProgram();
-
-  // Desugar
-  const desugar = new Desugar(fileName, source);
-  const lowered = desugar.lowerProgram(ast);
-
-  // Type check
-  const checker = new TypeChecker(fileName, source);
-  checker.checkProgram(lowered);
-
-  // Execute
-  const interp = new Interpreter(fileName, source);
-  return interp.runProgram(lowered);
+  const tokens = new Lexer(source, fileName).lex();
+  const ast = new Parser(tokens, source, fileName).parseProgram();
+  const lowered = new Desugar(fileName, source).lowerProgram(ast);
+  new TypeChecker(fileName, source).checkProgram(lowered);
+  return new Interpreter(fileName, source).runProgram(lowered);
 }
 
 function main() {
@@ -2416,36 +2194,8 @@ function main() {
     process.exit(1);
   }
   const source = fs.readFileSync(file, "utf8");
-  try {
-    const result = runOne(source, file);
-    // For frontend mode, result contains {roots, ui}
-    if (result && typeof result === "object" && result.roots) {
-      // v0.1: no rendering, but you can inspect structure
-      // console.log(JSON.stringify(result.roots, null, 2));
-    }
-  } catch (e) {
-    console.error(String(e.message || e));
-    process.exit(1);
-  }
+  try { runOne(source, file); }
+  catch (e) { console.error(String(e.message || e)); process.exit(1); }
 }
 
 if (require.main === module) main();
-
-/**
- * ======================================================
- * Known limitations of THIS v0.1 implementation file
- * ======================================================
- * - Type syntax currently supports only simple types:
- *     number, string, bool, null, and named types (type User {...})
- * - Nullable types (T?) and union types (A | B) are spec’d, but not yet enabled
- *   because this lexer version does not tokenize '?' and single '|'.
- *   (Easy upgrade: add TK.QUESTION and TK.BITOR tokens and implement parseTypeRef.)
- * - <style> is stored as raw text and not validated yet.
- *
- * Everything else in the current ONE design is implemented:
- * - backend forbids < >
- * - frontend supports structure with <logic>{...}</logic>
- * - braces required for .loop/.when/.maybe shortcuts
- * - desugaring works
- * - strict optional typing works for implemented type forms
- */
