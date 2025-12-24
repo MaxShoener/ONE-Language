@@ -1,0 +1,21 @@
+@backend
+
+export fn sum(a: number, b: number): number {
+  return a + b
+}
+
+export fn min(a: number, b: number): number {
+  if (a < b) {
+    return a
+  } else {
+    return b
+  }
+}
+
+export fn max(a: number, b: number): number {
+  if (a > b) {
+    return a
+  } else {
+    return b
+  }
+}
