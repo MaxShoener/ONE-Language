@@ -6,6 +6,10 @@
   "publisher": "your-name-here",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Programming Languages"],
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onLanguage:one"
+  ]
   "contributes": {
     "languages": [
       {
