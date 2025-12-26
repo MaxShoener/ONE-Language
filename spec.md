@@ -1,79 +1,108 @@
-# ONE v1.1 Spec (SPEC_v1_1.md)
+# ONE v1.1 Specification
 
-> ONE v1.1 = “production hardening”: frontend parity, universal modules, bytecode artifacts, stronger optimizer, and CLI polish.
+ONE is a “one for all” programming language designed to unify backend and frontend development under a single syntax, a single compiler, and a single mental model.
 
-This spec is written to match the ONE v1.0 blueprint you provided, with v1.1 fixes for:
-1) frontend imports/exports
-2) strict ONE semantics in emitted JS (no JS truthiness leaks)
-3) `.onebc` bytecode build artifacts (fast startup)
-4) editor/tooling integration path (VS Code tasks/commands)
-5) optimizer upgrades (safe folding + DCE + branch pruning + return-based DCE + light LICM)
+ONE v1.1 is a production-hardening release that fixes remaining semantic gaps from v1.0, adds frontend–backend parity, introduces build artifacts, and defines a stable foundation for public release and tooling.
 
 ---
 
-## 0. Concepts
+## 1. Files, Modes, and Targets
 
-### Modes
-- `@backend` (default)
+### 1.1 File Extensions
+
+- Source files use the `.one` extension.
+- Compiled backend artifacts use the `.onebc` extension.
+
+### 1.2 Modes
+
+A ONE file operates in one of two modes:
+
+- `@backend` (default if omitted)
 - `@frontend`
 
-A file’s mode is determined by the first directive line, if present:
-- `@backend`
-- `@frontend`
+The mode is determined by the first non-whitespace line in the file. If no mode directive is present, the file is treated as `@backend`.
 
-If absent, the mode is `@backend`.
+### 1.3 Backend Target
 
-### File extension
-- Source: `.one`
-- Bytecode artifact: `.onebc`
+Backend compilation produces:
+- In-memory bytecode for `one run file.one`
+- A persisted bytecode artifact for `one build file.one`, written as `file.onebc`
+
+Backend execution always occurs on the ONE Bytecode Virtual Machine.
+
+### 1.4 Frontend Target
+
+Frontend compilation produces two files:
+- `file.html`
+- `file.js`
+
+The generated HTML loads the generated JavaScript and renders the application in a browser.
+
+Frontend output must enforce ONE semantics strictly:
+- Conditions must evaluate to `bool`
+- Type errors must throw ONE runtime errors
+- Scoping rules must match backend behavior
+- Error handling must behave identically to backend execution
 
 ---
 
-## 1. Lexical syntax (backend)
+## 2. Lexical Structure
 
-### Whitespace & terminators
-- Newlines act as statement terminators (like “soft semicolons”).
-- `;` is optional and may terminate a statement.
-- Comments:
-  - `//` line comment
+### 2.1 Whitespace
 
-### Identifiers
-- `[A-Za-z_][A-Za-z0-9_]*`
+Whitespace consists of:
+- Space
+- Tab
+- Carriage return
 
-### Keywords
-- `let`, `fn`, `type`
-- `if`, `else`
-- `while`, `for`
-- `break`, `continue`, `return`
-- `true`, `false`, `null`
-- `import`, `export`
-- `throw`, `try`, `catch`
+Newlines terminate statements unless a semicolon is used.
 
-### Literals
-- numbers: `123`, `3.14`
-- strings: `"text"` with escapes `\n \t \" \\`
-- bool: `true`, `false`
-- null: `null`
+### 2.2 Comments
 
-### Operators
-- Arithmetic: `+ - * /`
-- Comparison: `< <= > >=`
-- Equality: `== !=`
-- Unary: `! -`
-- Assignment: `=`
+Single-line comments begin with `//` and continue until the end of the line.
+
+### 2.3 Identifiers
+
+Identifiers:
+- Must start with a letter (`A–Z`, `a–z`) or underscore (`_`)
+- May contain letters, digits, and underscores
+
+Multi-word identifiers must use camelCase formatting.
+
+### 2.4 Literals
+
+Supported literal types:
+- Numbers: `1`, `2.5`
+- Strings: `"hello"`
+- Booleans: `true`, `false`
+- Null: `null`
+
+Strings support escape sequences: `\n`, `\t`, `\"`, `\\`.
+
+### 2.5 Operators and Symbols (Backend)
+
+- Grouping and calls: `(` `)`
+- Blocks and objects: `{` `}`
 - Member access: `.`
-- Object literal: `{ key: expr, ... }`
+- Separators: `,` `:` `;`
+- Assignment: `=`
+- Equality: `==` `!=`
+- Comparison: `<` `<=` `>` `>=`
+- Arithmetic: `+` `-` `*` `/`
+- Unary: `!` `-`
 
-### Backend angle bracket rule
-Backend mode forbids HTML-like tags:
-- Disallowed patterns: `<name` or `</name`
-- Allowed: comparisons like `a < b` or `x <= y`
+### 2.6 Angled Brackets in Backend
+
+In backend mode, `<` and `>` are valid only as comparison operators.
+
+Any markup-like usage (e.g. `<div>`, `</x>`, `<logic>`) is a syntax error in backend mode.
 
 ---
 
-## 2. Types
+## 3. Types and Values
 
-### Runtime types
+### 3.1 Built-in Types
+
 - `number`
 - `string`
 - `bool`
@@ -81,274 +110,285 @@ Backend mode forbids HTML-like tags:
 - `object`
 - `list`
 
-### Type annotations (optional)
-- `let x: number = 1`
-- `fn add(a: number, b: number): number { return a + b }`
+### 3.2 Type Annotations
 
-Type checking is **strict**:
-- If annotated, runtime value must match exactly.
-- Incorrect types produce a runtime error (ONE error).
+Type annotations are optional but strict if present.
 
-### Lists
-ONE uses parentheses list syntax:
-- list literal: `(1, 2, 3)`
-- empty list: `()`
+If a value does not match its declared type at runtime, a type error is thrown.
 
-List operations (v1.1):
-- `.len` property (read-only)
-- `.get(i)` returns element
-- `.set(i, v)` mutates element, returns `null`
+Type annotations are supported on:
+- Variable declarations
+- Function parameters
+- Function return values
 
-Indexing `[i]` is not used in v1.1.
+### 3.3 Default Values
+
+- Missing function arguments default to `null`
+- Missing return statements default to `null`
 
 ---
 
-## 3. Declarations
+## 4. Variables and Scope
 
-### Variables
-- Only `let` (no `const` yet).
-- Must be declared before use.
-- Block scoped.
+### 4.1 Declarations
 
-### Functions
-- Declared with `fn`.
-- Hoisted at module scope (callable before definition).
-- Support recursion and closures.
+Variables are declared using `let`.  
+Variables are block-scoped.  
+Variables must be declared before use.
 
-Default return value: `null`.
+Example:
+let x: number = 10
+{
+  let x: number = 20
+  print(x)
+}
+print(x)
 
-### Types
-- `type Name { field: Type ... }` exists for future shaping.
-- v1.1 runtime enforces only primitive annotations (`number|string|bool|null|object|list`) unless extended.
+### 4.2 Assignment
 
----
+Variables and object properties may be assigned:
 
-## 4. Statements & control flow
-
-### Blocks
-- `{ ... }` is a block scope.
-
-### if / else
-- Condition must be `bool` (strict).
-
-### while
-- Condition must be `bool`.
-- Supports `break`, `continue`.
-
-### for
-Syntax:
-- `init` may be:
-  - `let x = expr`
-  - assignment `x = expr`
-  - expression statement (rare)
-  - empty
-- `cond` is an expression; if present must evaluate to `bool`
-- `update` may be assignment or expression; may be empty
-- Supports `break`, `continue`
-
-### return
-- `return` or `return expr`
-
-### break / continue
-- Only valid inside loops.
+x = 5  
+obj.key = 10
 
 ---
 
 ## 5. Expressions
 
-### Precedence (high → low)
-- member/call
-- unary `! -`
-- `* /`
-- `+ -`
-- comparisons `< <= > >=`
-- equality `== !=`
+### 5.1 Operator Precedence (Highest to Lowest)
 
-### Calls
-- `f(1, 2)`
+1. Member access and function calls  
+2. Unary operators  
+3. Multiplication and division  
+4. Addition and subtraction  
+5. Comparisons  
+6. Equality checks  
 
-### Member access
-- `obj.key`
-- assignment: `obj.key = expr` (v1.1)
+### 5.2 Lists
 
-### Objects
-- literal: `{ a: 1, b: "x" }`
-- keys are identifiers only (no computed keys).
-- nested objects allowed.
+Lists use tuple syntax:
 
----
-
-## 6. Error handling
-
-### throw
-- `throw expr`
-- throws any value (commonly string)
-
-### try / catch
-- `e` is a new block-scoped variable in the catch block.
-- if no catch matches, error propagates and stops the program.
-
----
-
-## 7. Modules
-
-### Import forms
-- statement form:
-  - `import "./file.one"`
-  - executes module once for side effects, caches exports
-- expression form:
-  - `let m = import("./file.one")`
-  - returns an exports object
-
-### Exports
-- `export let x = 1`
-- `export fn f() { ... }`
-
-### Circular imports
-- Error with a clear “cycle” chain.
-
-### v1.1 frontend module support
-- Imports and exports inside frontend `<logic>` are supported.
-- Frontend compilation bundles imported backend modules into the emitted JS runtime so the browser can resolve them.
-
----
-
-## 8. Frontend (`@frontend`)
-
-A frontend file may contain:
-- `<logic> ... </logic>` : full backend language (v1.1), including imports/exports, loops, throw/try/catch, objects, lists
-- `<style> ... </style>` : preserved and embedded into output HTML
-- Markup:
-  - elements: `<div id="x"> ... </div>`
-  - text must be quoted: `"Hello"`
-  - interpolation: `{expr}` (backend expression)
-  - event attributes: `onClick="handler()"`, `onInput="handler()"`, etc.
-
-### Output
-`one build file.one` where file is `@frontend` produces:
-- `file.html` — contains markup and style
-- `file.js` — contains compiled/bundled runtime + bytecode + DOM builder glue
-
-Semantics guarantee:
-- Frontend execution must enforce ONE rules (strict bool conditions, type checks, etc.). No JS truthiness.
-
----
-
-## 9. Compiler pipeline
-
-### Backend pipeline
-1) Lexer
-2) Parser (AST)
-3) Analyzer (scope, declaration-before-use, loop control validity, etc.)
-4) Optimizer
-   - constant folding
-   - constant propagation (safe + local)
-   - dead code elimination (statement-level)
-   - return-based DCE (unreachable after return/throw/break/continue)
-   - branch pruning for constant conditions
-   - light loop-invariant code motion (safe-only)
-5) Bytecode compiler
-6) Bytecode VM execution OR `.onebc` artifact output
-
-### Frontend pipeline
-1) Parse frontend blocks
-2) Compile `<logic>` through backend pipeline to bytecode
-3) Bundle imported modules’ bytecode
-4) Emit JS runtime containing VM and module loader
-5) Emit HTML + DOM builder that renders markup and wires events
-
----
-
-## 10. CLI
-
-Binary entrypoint:
-- `node one.js ...` (or installed as `one`)
-
-Commands:
-- `one run <file.one>`  
-  - backend: run via VM
-  - frontend: compile and open instructions (or run `serve`)
-- `one build <file.one>`  
-  - backend: produce `<file>.onebc`
-  - frontend: produce `<file>.html` and `<file>.js`
-- `one fmt <file.one>`  
-  - format backend or frontend with stable formatting
-- `one serve <file.one> [--port N]`  
-  - build (frontend) then serve directory with a simple dev server
-- `one test`  
-  - runs built-in compiler/VM tests
-- `one init <dir>`  
-  - scaffolds a sample ONE project
-
----
-
-## 11. VS Code integration (v1.1 path)
-
-v1.1 ships the CLI stability needed for VS Code:
-- Run uses: `one run ${file}`
-- Build uses: `one build ${file}`
-- Format uses: `one fmt ${file}`
-
-Extension responsibilities:
-- syntax highlighting + language config
-- formatter hook that calls `one fmt`
-- commands: Run/Build
-- diagnostics: parse ONE stderr output and surface as problems
-
----
-
-## 12. Examples
-
-### Backend modules
-**math.one**
-```one
-@backend
-export fn add(a: number, b: number): number { return a + b }
-export let pi: number = 3.14159
-
-**main.one**
-```one
-@backend
-let m = import("./math.one")
-print(m.add(2, 3))
-print(m.pi)
-
-Objects + Lists
-```one
-@backend
-let user = { name: "Max", score: 10 }
-user.score = user.score + 5
 let xs = (1, 2, 3)
-xs.set(1, 99)
-print(xs.get(1))
-print(xs.len)
 
-Try/Catch
-```one
-@backend
-try {
-  throw "nope"
-} catch (e) {
-  print("caught:", e)
+An empty list is written as `()`.
+
+List operations:
+- xs.len
+- xs.get(i)
+- xs.set(i, value)
+
+Square-bracket indexing is not used.
+
+---
+
+## 6. Control Flow
+
+### 6.1 if / else
+
+if (cond) { ... } else { ... }
+
+Conditions must evaluate to `bool`.
+
+### 6.2 while
+
+while (cond) { ... }
+
+### 6.3 for
+
+for (init; cond; update) { ... }
+
+Each clause may be empty. If present, the condition must be `bool`.
+
+### 6.4 break / continue
+
+`break` and `continue` may only appear inside loops.
+
+### 6.5 return
+
+return  
+return expr  
+
+---
+
+## 7. Functions
+
+### 7.1 Declarations
+
+fn add(a: number, b: number): number {
+  return a + b
 }
 
-### Frontend
-```one
-@frontend
-<logic>
-  import "./math.one"
-  let clicks: number = 0
-  fn inc(): null {
-    clicks = clicks + 1
-    return null
-  }
-</logic>
+Functions are hoisted within their scope.
 
-<style>
-  body { font-family: sans-serif; }
-</style>
+### 7.2 Calls
 
-<div id="app">
-  <h1>"Clicks:" {clicks}</h1>
-  <button onClick="inc()">"Click"</button>
-</div>
+let x = add(2, 3)
+
+Closures and recursion are supported.
+
+---
+
+## 8. Objects
+
+### 8.1 Object Literals
+
+let user = { name: "Max", age: 19 }
+
+### 8.2 Property Access
+
+print(user.name)
+
+### 8.3 Property Assignment
+
+user.age = user.age + 1
+
+Computed keys and method shorthand are not supported in v1.1.
+
+---
+
+## 9. Error Handling
+
+### 9.1 throw
+
+throw "error"  
+throw 123  
+throw { msg: "bad" }
+
+### 9.2 try / catch
+
+try {
+  risky()
+} catch (e) {
+  print(e)
+}
+
+Thrown values propagate until caught.
+
+---
+
+## 10. Modules
+
+### 10.1 Import Forms
+
+Statement import:
+import "./file.one"
+
+Expression import:
+let m = import("./file.one")
+
+### 10.2 Export Forms
+
+export let x = 1  
+export fn f() { ... }
+
+### 10.3 Resolution Rules
+
+- Paths are resolved relative to the importing file
+- `.one` is appended if missing
+- Modules execute once and are cached
+- Circular imports are errors
+
+### 10.4 Frontend Module Bundling
+
+In `@frontend`, all imported modules in `<logic>` are bundled into the generated JavaScript output.
+
+---
+
+## 11. Frontend Structure
+
+A frontend file may contain:
+- `<logic>` block with full backend code
+- `<style>` block (raw CSS)
+- Markup content
+
+### 11.1 Text Nodes
+
+Text must be quoted:
+"Hello"
+
+### 11.2 Interpolation
+
+{value}
+
+Expressions in interpolation must follow backend expression rules.
+
+### 11.3 Events
+
+<button onClick="handler()">
+  "Click"
+</button>
+
+Handlers refer to functions defined in `<logic>`.
+
+---
+
+## 12. Compiler Pipeline
+
+### 12.1 Backend Pipeline
+
+1. Lexer  
+2. Parser  
+3. Analyzer  
+4. Optimizer  
+5. Bytecode Generation  
+6. VM Execution or `.onebc` Output  
+
+### 12.2 Frontend Pipeline
+
+1. Extract `<logic>`, `<style>`, markup  
+2. Compile `<logic>` via backend pipeline  
+3. Bundle modules  
+4. Emit strict-semantics JS runtime  
+5. Emit HTML loader  
+
+---
+
+## 13. Optimizer Passes
+
+- Constant folding  
+- Dead code elimination  
+- Branch pruning  
+- Return-based dead code elimination  
+
+All optimizations must preserve semantics.
+
+---
+
+## 14. CLI
+
+Command: `one`
+
+Supported commands:
+- one run
+- one build
+- one fmt
+- one serve
+- one test
+- one init
+
+---
+
+## 15. Compatibility Guarantees
+
+- Backend VM and frontend JS enforce identical semantics
+- `.onebc` artifacts are forward-compatible within 1.x
+- Module behavior is identical in backend and frontend
+
+---
+
+## 16. Non-Goals (v1.1)
+
+- Generics
+- Classes
+- Computed object keys
+- Concurrency primitives
+- FFI
+- Self-hosting compiler
+
+---
+
+## 17. Status
+
+ONE v1.1 defines a complete, strict, production-ready language specification suitable for public release, tooling integration, and future evolution toward self-hosting.
+
+END OF SPEC
