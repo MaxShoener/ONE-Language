@@ -307,13 +307,14 @@ export fn add(a: number, b: number): number { return a + b }
 export let pi: number = 3.14159
 
 **main.one**
-@backend
 ```one
+@backend
 let m = import("./math.one")
 print(m.add(2, 3))
 print(m.pi)
 
 Objects + Lists
+```one
 @backend
 let user = { name: "Max", score: 10 }
 user.score = user.score + 5
@@ -323,6 +324,7 @@ print(xs.get(1))
 print(xs.len)
 
 Try/Catch
+```one
 @backend
 try {
   throw "nope"
@@ -331,6 +333,7 @@ try {
 }
 
 ### Frontend
+```one
 @frontend
 <logic>
   import "./math.one"
