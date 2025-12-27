@@ -1490,7 +1490,7 @@ class VM {
     const fileName = this.mod.fileName;
 
     const baseEnv = envOverride || new Env(fn.closureEnv || null);
-    let env = new Env(baseEnv);
+    const env = new Env(baseEnv);
 
     // declare params
     for (let i = 0; i < fn.params.length; i++) {
@@ -1507,12 +1507,8 @@ class VM {
     const handlers = [];
 
     function dbgLoc() {
-      return debug[ip] || debug[Math.max(0, ip - 1)] || { line: fn.line || 1, col: fn.col || 1 };
-    }
-
-    function locErr(msg) {
-      const d = dbgLoc();
-      throwErr(fileName, d.line, d.col, msg);
+      const d = debug[ip] || debug[Math.max(0, ip - 1)] || { line: fn.line || 1, col: fn.col || 1 };
+      return d;
     }
 
     while (ip < code.length) {
@@ -1520,20 +1516,21 @@ class VM {
 
       try {
         switch (op) {
+          case Op.NOP: break;
 
-          case Op.NOP:
+          case Op.CONST: {
+            const idx = code[ip++];
+            stack.push(this.mod.consts[idx]);
             break;
-
-          case Op.CONST:
-            stack.push(this.mod.consts[code[ip++]]);
-            break;
+          }
 
           case Op.POP:
             stack.pop();
             break;
 
           case Op.DEF: {
-            const name = this.mod.consts[code[ip++]];
+            const nameIdx = code[ip++];
+            const name = this.mod.consts[nameIdx];
             const value = stack.pop();
             const declared = fn.localTypes[name] || null;
             if (declared) assertTypeRuntime(fileName, dbgLoc().line, dbgLoc().col, declared, value);
@@ -1542,49 +1539,74 @@ class VM {
           }
 
           case Op.LOAD: {
-            const name = this.mod.consts[code[ip++]];
+            const nameIdx = code[ip++];
+            const name = this.mod.consts[nameIdx];
             const v = env.get(name);
-            if (v === undefined) locErr(`Undefined identifier: ${name}`);
+            if (v === undefined) {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Undefined identifier: ${name}`);
+            }
             stack.push(v);
             break;
           }
 
           case Op.STORE: {
-            const name = this.mod.consts[code[ip++]];
+            const nameIdx = code[ip++];
+            const name = this.mod.consts[nameIdx];
             const value = stack.pop();
             const declared = env.getDeclaredType(name);
             if (declared) assertTypeRuntime(fileName, dbgLoc().line, dbgLoc().col, declared, value);
-            if (!env.set(name, value)) locErr(`Assignment to undefined variable: ${name}`);
+            const ok = env.set(name, value);
+            if (!ok) {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Assignment to undefined variable: ${name}`);
+            }
             break;
           }
 
           case Op.GETPROP: {
-            const prop = this.mod.consts[code[ip++]];
+            const propIdx = code[ip++];
+            const prop = this.mod.consts[propIdx];
             const obj = stack.pop();
 
             if (Array.isArray(obj)) {
               if (prop === "len") { stack.push(obj.length); break; }
               if (prop === "get") { stack.push(makeListGetBuiltin(obj, fileName, dbgLoc())); break; }
               if (prop === "set") { stack.push(makeListSetBuiltin(obj, fileName, dbgLoc())); break; }
-              locErr(`Unknown list property: ${prop}`);
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Unknown list property: ${prop}`);
             }
 
-            if (obj === null || typeof obj !== "object")
-              locErr(`Cannot access member '${prop}' on ${typeOfValue(obj)}`);
-
-            if (!(prop in obj)) locErr(`Property not found: ${prop}`);
+            if (obj === null) {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, "Cannot access property of null");
+            }
+            if (typeof obj !== "object") {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Cannot access member '${prop}' on ${typeOfValue(obj)}`);
+            }
+            if (!(prop in obj)) {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Property not found: ${prop}`);
+            }
             stack.push(obj[prop]);
             break;
           }
 
           case Op.SETPROP: {
-            const prop = this.mod.consts[code[ip++]];
+            const propIdx = code[ip++];
+            const prop = this.mod.consts[propIdx];
             const value = stack.pop();
             const obj = stack.pop();
 
-            if (obj === null || typeof obj !== "object" || Array.isArray(obj))
-              locErr(`Cannot set member '${prop}' on ${typeOfValue(obj)}`);
-
+            if (obj === null) {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, "Cannot set property on null");
+            }
+            if (typeof obj !== "object" || Array.isArray(obj)) {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Cannot set member '${prop}' on ${typeOfValue(obj)}`);
+            }
             obj[prop] = value;
             stack.push(value);
             break;
@@ -1599,35 +1621,161 @@ class VM {
             break;
           }
 
+          case Op.LIST_GET: {
+            const idx = stack.pop();
+            const list = stack.pop();
+            if (!Array.isArray(list)) {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Type error: .get() expects list (got ${typeOfValue(list)})`);
+            }
+            if (typeof idx !== "number") {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Type error: list index must be number (got ${typeOfValue(idx)})`);
+            }
+            const i = idx | 0;
+            if (i < 0 || i >= list.length) {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Index out of range: ${i}`);
+            }
+            stack.push(list[i]);
+            break;
+          }
+
+          case Op.LIST_SET: {
+            const value = stack.pop();
+            const idx = stack.pop();
+            const list = stack.pop();
+            if (!Array.isArray(list)) {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Type error: .set() expects list (got ${typeOfValue(list)})`);
+            }
+            if (typeof idx !== "number") {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Type error: list index must be number (got ${typeOfValue(idx)})`);
+            }
+            const i = idx | 0;
+            if (i < 0 || i >= list.length) {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Index out of range: ${i}`);
+            }
+            list[i] = value;
+            stack.push(value);
+            break;
+          }
+
+          case Op.LEN: {
+            const v = stack.pop();
+            if (Array.isArray(v)) stack.push(v.length);
+            else if (typeof v === "string") stack.push(v.length);
+            else {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Type error: .len expects list or string (got ${typeOfValue(v)})`);
+            }
+            break;
+          }
+
           case Op.MAKEOBJ: {
             const pairCount = code[ip++];
             const obj = Object.create(null);
             for (let i = 0; i < pairCount; i++) {
               const value = stack.pop();
               const key = stack.pop();
-              if (typeof key !== "string") locErr(`Object key must be string`);
+              if (typeof key !== "string") {
+                const d = dbgLoc();
+                throwErr(fileName, d.line, d.col, `Object key must be string (got ${typeOfValue(key)})`);
+              }
               obj[key] = value;
             }
             stack.push(obj);
             break;
           }
 
-          case Op.ADD: stack.push(stack.pop() + stack.pop()); break;
-          case Op.SUB: { const b = stack.pop(); stack.push(stack.pop() - b); break; }
-          case Op.MUL: stack.push(stack.pop() * stack.pop()); break;
-          case Op.DIV: { const b = stack.pop(); stack.push(stack.pop() / b); break; }
+          case Op.ADD: {
+            const b = stack.pop(), a = stack.pop();
+            const ta = typeOfValue(a), tb = typeOfValue(b);
+            if (ta === "number" && tb === "number") stack.push(a + b);
+            else if (ta === "string" && tb === "string") stack.push(a + b);
+            else {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Type error: '+' expects number+number or string+string (got ${ta}+${tb})`);
+            }
+            break;
+          }
 
-          case Op.NEG: stack.push(-stack.pop()); break;
-          case Op.NOT: stack.push(!stack.pop()); break;
+          case Op.SUB: {
+            const b = stack.pop(), a = stack.pop();
+            if (typeof a !== "number" || typeof b !== "number") {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Type error: '-' expects number-number`);
+            }
+            stack.push(a - b);
+            break;
+          }
 
-          case Op.EQ: stack.push(stack.pop() === stack.pop()); break;
-          case Op.NEQ: stack.push(stack.pop() !== stack.pop()); break;
+          case Op.MUL: {
+            const b = stack.pop(), a = stack.pop();
+            if (typeof a !== "number" || typeof b !== "number") {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Type error: '*' expects number*number`);
+            }
+            stack.push(a * b);
+            break;
+          }
+
+          case Op.DIV: {
+            const b = stack.pop(), a = stack.pop();
+            if (typeof a !== "number" || typeof b !== "number") {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Type error: '/' expects number/number`);
+            }
+            stack.push(a / b);
+            break;
+          }
+
+          case Op.NEG: {
+            const a = stack.pop();
+            if (typeof a !== "number") {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Type error: unary '-' expects number`);
+            }
+            stack.push(-a);
+            break;
+          }
+
+          case Op.NOT: {
+            const a = stack.pop();
+            if (typeof a !== "boolean") {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Type error: '!' expects bool`);
+            }
+            stack.push(!a);
+            break;
+          }
+
+          case Op.EQ: {
+            const b = stack.pop(), a = stack.pop();
+            if (typeOfValue(a) !== typeOfValue(b)) stack.push(false);
+            else stack.push(a === b);
+            break;
+          }
+
+          case Op.NEQ: {
+            const b = stack.pop(), a = stack.pop();
+            if (typeOfValue(a) !== typeOfValue(b)) stack.push(true);
+            else stack.push(a !== b);
+            break;
+          }
 
           case Op.LT:
           case Op.LTE:
           case Op.GT:
           case Op.GTE: {
             const b = stack.pop(), a = stack.pop();
+            const ta = typeOfValue(a), tb = typeOfValue(b);
+            if (!((ta === "number" && tb === "number") || (ta === "string" && tb === "string"))) {
+              const d = dbgLoc();
+              throwErr(fileName, d.line, d.col, `Type error: comparison expects number/number or string/string (got ${ta}/${tb})`);
+            }
             if (op === Op.LT) stack.push(a < b);
             else if (op === Op.LTE) stack.push(a <= b);
             else if (op === Op.GT) stack.push(a > b);
@@ -1635,20 +1783,28 @@ class VM {
             break;
           }
 
-          case Op.JMP:
-            ip = code[ip++];
-            break;
-
-          case Op.JMPF: {
+          case Op.JMP: {
             const target = code[ip++];
-            if (!truthyBoolOnly(fileName, dbgLoc().line, dbgLoc().col, stack.pop()))
-              ip = target;
+            ip = target;
             break;
           }
 
-          case Op.CLOSURE:
-            stack.push(new OneFunction(code[ip++], env, fn.name));
+          case Op.JMPF: {
+            const target = code[ip++];
+            const cond = stack.pop();
+            const d = dbgLoc();
+            if (!truthyBoolOnly(fileName, d.line, d.col, cond)) {
+              ip = target;
+            }
             break;
+          }
+
+          case Op.CLOSURE: {
+            const fidx = code[ip++];
+            const closure = new OneFunction(fidx, env, this.mod.funcs[fidx].name);
+            stack.push(closure);
+            break;
+          }
 
           case Op.CALL: {
             const argc = code[ip++];
@@ -1658,25 +1814,26 @@ class VM {
             const callee = stack.pop();
 
             if (typeof callee === "function") {
-              stack.push(callee(...args2));
+              const res = callee(...args2);
+              stack.push(res);
               break;
             }
 
             if (callee instanceof OneFunction) {
-              try {
-                stack.push(this.runFunction(callee.fnIndex, args2, callee.env));
-                break;
-              } catch (e) {
-                if (e instanceof OneThrown) throw e;
-                throw e;
-              }
+              // IMPORTANT: allow OneThrown to bubble up to THIS frame
+              const res = this.runFunction(callee.fnIndex, args2, callee.env);
+              stack.push(res);
+              break;
             }
 
-            locErr(`Attempted to call non-function (${typeOfValue(callee)})`);
+            const d = dbgLoc();
+            throwErr(fileName, d.line, d.col, `Attempted to call non-function (${typeOfValue(callee)})`);
           }
 
-          case Op.RET:
-            return stack.pop();
+          case Op.RET: {
+            const ret = stack.pop();
+            return ret;
+          }
 
           case Op.TRY: {
             const catchIp = code[ip++];
@@ -1688,31 +1845,39 @@ class VM {
             handlers.pop();
             break;
 
-          case Op.THROW:
-            throw new OneThrown(stack.pop());
+          case Op.THROW: {
+            const value = stack.pop();
+            throw new OneThrown(value);
+          }
 
-          default:
-            locErr(`VM: Unknown opcode ${op}`);
+          default: {
+            const d = dbgLoc();
+            throwErr(fileName, d.line, d.col, `VM: Unknown opcode ${op} (${opName(op)})`);
+          }
         }
-
       } catch (e) {
         if (e instanceof OneThrown) {
+          // KEY CHANGE:
+          // If this frame has no handlers, DO NOT convert to fatal error.
+          // Let it bubble upward so an outer try/catch can catch it.
           if (handlers.length === 0) {
-            const d = dbgLoc();
-            throwErr(fileName, d.line, d.col, `Uncaught throw: ${stringifyValue(e.value)}`);
+            throw e;
           }
+
           const h = handlers.pop();
           while (stack.length > h.stackDepth) stack.pop();
           stack.push(e.value);
           ip = h.catchIp;
           continue;
         }
+
+        // rethrow OneError or unknown
         throw e;
       }
     }
 
-    return null;
-  }  
+    return null; // implicit return null
+  }    
 }
 
 function makeListGetBuiltin(listRef, fileName, loc) {
